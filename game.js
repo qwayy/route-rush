@@ -160,9 +160,14 @@ const CONFIG = {
   smokeLife: 4.5,
   smokeMax: 2,
   skylineHeight: 92,         // River Market skyline band at the top of the screen
+
+  // Music: loops from the first run on. Button (top right) or M mutes; remembered.
+  musicFile: 'music/shit-talking.mp3',
+  musicVolume: 0.8,          // 0..1 (iPhones ignore this and use the phone's volume)
 };
 
 const BEST_KEY = 'routeRush.best';
+const MUTE_KEY = 'routeRush.musicMuted';
 const DAY_NAMES = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 
 
@@ -454,6 +459,7 @@ function resetGame() {
 }
 
 function startGame() {
+  playMusic();   // runs inside the tap/keypress that starts the run, so phones allow it
   resetGame();
   if (tilt.enabled) calibrateTilt();   // "level" = how the phone is held right now
   game.state = 'playing';
@@ -666,6 +672,7 @@ window.addEventListener('keydown', (e) => {
   else if (KEYS_RIGHT.includes(e.code)) { input.right = true; e.preventDefault(); }
   if (e.repeat) return;
   if (e.code === 'KeyH') { debug.hitAreas = !debug.hitAreas; return; }
+  if (e.code === 'KeyM') { toggleMute(); return; }
   if (KEYS_THROW_LEFT.includes(e.code)) throwPaper(-1);
   else if (KEYS_THROW_RIGHT.includes(e.code)) throwPaper(1);
   else if (e.code === 'Space' || e.code === 'Enter') {
@@ -2959,23 +2966,24 @@ function tryStartFromOverlay() {
 function updateSteerUI() {
   if (!ui.tiltBtn) return;
   const secure = window.isSecureContext;
-  ui.tiltBtn.classList.toggle('hidden', !(tilt.needsPermission && secure && !tilt.listening && !tilt.denied));
+  ui.tiltBtn.classList.toggle('hidden', !(isTouchDevice && tilt.needsPermission && secure && !tilt.listening && !tilt.denied));
   ui.steerMode.textContent =
     tiltActive() ? 'Tilt steering on'
+    : !isTouchDevice ? ''
     : tilt.needsPermission && !secure ? 'Tilt needs https: drag to steer'
     : tilt.denied ? 'Tilt not allowed: drag to steer'
-    : isTouchDevice ? (tilt.listening ? 'Tilt or drag to steer' : 'Drag to steer')
-    : 'Arrows steer · A/D throw';
+    : tilt.listening ? 'Tilt or drag to steer' : 'Drag to steer';
 }
 
 ui.tiltBtn.addEventListener('click', async (e) => {
   e.stopPropagation();
+  playMusic();           // start audio while we still have the tap (before the prompt)
   await requestTilt();   // shows the iPhone motion prompt
   if (game.state === 'title') startGame();
 });
 
 ui.overlay.addEventListener('click', (e) => {
-  if (e.target.closest('#share-btn') || e.target.closest('#tilt-btn')) return;
+  if (e.target.closest('#share-btn') || e.target.closest('#tilt-btn') || e.target.closest('#mute-btn')) return;
   tryStartFromOverlay();
 });
 
@@ -3009,6 +3017,46 @@ async function copyText(text) {
     return ok;
   } catch (e) { return false; }
 }
+
+// --- Music ---
+// A plain <audio> element: it keeps playing with the iPhone silent switch on
+// (Web Audio would be muted), loops on its own, and pauses with the tab.
+const music = { el: null, wanted: false, muted: storage.get(MUTE_KEY, '0') === '1' };
+const muteBtn = document.getElementById('mute-btn');
+
+function playMusic() {
+  if (!music.el) {
+    music.el = new Audio(CONFIG.musicFile);
+    music.el.loop = true;
+    music.el.preload = 'auto';
+    music.el.volume = CONFIG.musicVolume;
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* older Safari */ }
+  }
+  music.wanted = true;
+  music.el.muted = music.muted;
+  if (!document.hidden && music.el.paused) music.el.play().catch(() => { /* blocked until a tap: retried on the next start */ });
+}
+
+function toggleMute() {
+  music.muted = !music.muted;
+  storage.set(MUTE_KEY, music.muted ? '1' : '0');
+  if (music.el) music.el.muted = music.muted;
+  if (!music.muted && music.wanted) playMusic();
+  updateMuteUI();
+}
+
+function updateMuteUI() {
+  muteBtn.classList.toggle('off', music.muted);
+  muteBtn.setAttribute('aria-label', music.muted ? 'Music off' : 'Music on');
+}
+
+muteBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleMute(); });
+document.addEventListener('visibilitychange', () => {
+  if (!music.el) return;
+  if (document.hidden) music.el.pause();
+  else if (music.wanted) playMusic();
+});
+updateMuteUI();
 
 function maybeFullscreen() {
   if (!CONFIG.fullscreenOnTouch || lastPointerType !== 'touch') return;

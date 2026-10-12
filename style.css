@@ -134,3 +134,20 @@ h2 { font-size: 20px; font-weight: 400; text-transform: uppercase; color: var(--
 #over-reached { font-size: 12px; line-height: 20px; }
 .share.hidden { display: none; }
 #steer-mode { margin-top: 10px; opacity: 0.8; color: var(--gold); }
+
+/* ---------- Music on/off ---------- */
+.mute {
+  position: absolute;
+  top: calc(8px + env(safe-area-inset-top, 0px));
+  right: 8px;
+  z-index: 5;
+  width: 36px;
+  height: 36px;
+  border: 3px solid #1a1c2c;
+  background: #2a3346;
+  color: var(--gold);
+  font: 18px/1 system-ui, sans-serif;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.mute.off { color: #6b7280; text-decoration: line-through; }
