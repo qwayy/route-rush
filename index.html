@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#16202c">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Route Rush</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="overlay" class="overlay">
+    <section id="screen-title" class="panel">
+      <h1 class="logo">ROUTE<span>RUSH</span></h1>
+      <p class="tagline">Seven neighborhoods. Endless weeks. Kansas City.</p>
+      <ul class="howto">
+        <li><b>Tilt</b> your phone to steer</li>
+        <li><b>Tap left / right</b> to throw</li>
+        <li>Porch 300 · <b class="gold">Mailbox 700</b></li>
+        <li>Unlimited papers. One crash ends it.</li>
+      </ul>
+      <p class="best">Best: <span id="title-best">0</span></p>
+      <button id="tilt-btn" class="share hidden" type="button">Tap to enable tilt</button>
+      <p id="steer-mode" class="keys"></p>
+      <p class="cta">Tap to start</p>
+      <p class="keys">Desktop: <span class="sys">← →</span> steer · A/D throw · Space starts</p>
+    </section>
+
+    <section id="screen-over" class="panel hidden">
+      <h2 id="over-title">Route over</h2>
+      <p id="over-reason" class="reason"></p>
+      <div class="stats">
+        <div><span class="label">Score</span><span id="over-score" class="value">0</span></div>
+        <div><span class="label">Best</span><span id="over-best" class="value">0</span></div>
+        <div><span class="label">Reached</span><span id="over-reached" class="value">MON W1</span></div>
+      </div>
+      <p id="new-best" class="new-best hidden">New best!</p>
+      <button id="share-btn" class="share" type="button">Share</button>
+      <p id="toast" class="toast"></p>
+      <p class="cta">Tap anywhere to ride again</p>
+    </section>
+
+    <section id="screen-day" class="panel hidden">
+      <h2 id="day-title">Monday done</h2>
+      <p id="day-place" class="place"></p>
+      <p id="day-perfect" class="new-best hidden">PERFECT DELIVERY!</p>
+      <ul class="summary">
+        <li><span>Deliveries</span><b id="sum-deliveries">0/0</b></li>
+        <li><span>Mailbox hits</span><b id="sum-mailbox">0</b></li>
+        <li><span>Windows broken</span><b id="sum-windows">0</b></li>
+        <li><span>Bonus course</span><b id="sum-bonus">0</b></li>
+        <li class="total"><span>Day score</span><b id="sum-score">0</b></li>
+      </ul>
+      <p id="sum-subs" class="reason"></p>
+      <p id="sum-next" class="cta">Tap to continue</p>
+    </section>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>

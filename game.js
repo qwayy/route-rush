@@ -1,0 +1,3038 @@
+'use strict';
+
+// =====================================================================
+//  ROUTE RUSH — prototype
+//
+//  Sections:
+//    1. CONFIG          every tuning number lives here
+//   1b. THEMES          Kansas City neighborhoods (one per day) + HOUSE_STYLES
+//    2. LAYOUT / COLORS street geometry + placeholder palette
+//    3. SETUP           canvas scaling, storage, small helpers
+//    4. GAME STATE      new game / days / crash / lives
+//    5. INPUT           pointer (touch + mouse) and keyboard
+//    6. SPAWNING        the street, props, obstacles, bonus course
+//    7. UPDATE          per-frame simulation, papers and scoring
+//    8. RENDER          all drawing (swap shapes for sprites here)
+//    9. UI              overlay screens, day summary, share
+//   10. LOOP
+//
+//  Coordinates: the world is a long vertical strip. `x` is across the
+//  street (0..gameWidth), `z` is distance along the route. The bike sits
+//  at z = game.dist; things with bigger z are further ahead (higher on
+//  screen). sy(z) converts a world z to a screen y. "lx" is an x measured
+//  as if on the LEFT side (right-side things are mirrored with sideX).
+//
+//  A run is endless weeks (Monday..Sunday, then WEEK 2, 3...) on the same
+//  street. Each day: route (20 houses) -> bonus course -> summary. Papers
+//  are unlimited; the only way to lose is crashing (CONFIG.lives).
+// =====================================================================
+
+
+// ---------------------------------------------------------------------
+// 1. CONFIG
+// ---------------------------------------------------------------------
+const CONFIG = {
+  // View
+  gameWidth: 400,            // logical width; height adapts to the screen
+  minGameHeight: 560,
+  maxGameHeight: 900,
+  bikeScreenY: 0.72,         // bike's vertical position (fraction of height)
+  fullscreenOnTouch: true,   // request fullscreen when a phone player starts
+
+  // Look: pixel art + fake 3D
+  pixelSize: 2,              // logical units per art pixel; must divide gameWidth (2 = crisp, 4 = chunky)
+  heightY: 0.75,             // how far up the screen one unit of height draws
+  perspX: 0.0026,            // how much tall things lean away from the centre line
+
+  // Speed (world units / second)
+  startSpeed: 210,
+  speedPerDay: 22,           // added each new day
+  speedPerLevel: 12,         // added every housesPerLevel houses within a day
+  housesPerLevel: 8,         // houses passed (both sides count)
+  speedPerWeek: 20,          // each new week starts this much faster than the last
+  maxSpeed: 400,             // hard cap: later difficulty comes from obstacles, not speed
+  speedEase: 1.5,            // how quickly speed eases toward its target
+
+  // Steering. Phones: tilt left/right (falls back to drag). Desktop: arrows.
+  tiltSensitivity: 16,       // sideways speed per degree of tilt past the dead zone
+  tiltDeadZone: 4,           // degrees around "level" that keep the bike straight
+  tiltMaxAngle: 22,          // tilting further than this (past the dead zone) doesn't steer harder
+  tiltSmoothing: 12,         // filters sensor jitter (higher = snappier, lower = smoother)
+  maxLean: 0.3,              // bike lean (radians) at full sideways speed
+  leanPerSpeed: 0.0022,      // lean per unit of sideways speed
+  dragSensitivity: 1.15,     // logical units moved per logical unit dragged
+  steerSmoothing: 14,        // higher = bike snaps to finger faster
+  keySteerSpeed: 300,        // arrow-key steering speed
+
+  // Tap vs drag detection
+  tapMaxMove: 10,            // CSS px a finger may wander and still be a tap
+  tapMaxTime: 200,           // ms a tap may last
+
+  // Throwing: papers fly straight out sideways, perpendicular to the street.
+  // Throw when the target is beside you. Timing is everything.
+  throwSpeed: 460,           // sideways speed
+  paperCarry: 0,             // fraction of the bike's forward speed a paper keeps (0 = dead straight)
+  throwHeight: 12,           // height papers fly at
+  throwCooldown: 0.25,       // seconds between throws (papers are unlimited)
+  paperMinLx: 20,            // a paper that hits nothing drops here (left-side x)
+
+  // The street and days
+  housesPerSide: 10,         // 2 x 10 = 20 houses per day
+  startSubscribers: 8,
+  routeLeadIn: 260,          // empty road before the first house
+  houseLenMin: 130,
+  houseLenMax: 170,
+  houseInterval: 1.2,        // seconds between houses on each side, at any speed
+  houseIntervalJitter: 0.08, // +-8% so the rhythm isn't robotic
+  yardMin: 60,               // never less side yard than this between houses
+  drivewayChance: 0.5,
+  sideFenceChance: 0.35,
+  propChance: 0.55,          // chance of a trash can at a house (plus maybe a fence / lawn ornament)
+  // Delivery hit areas (half-lengths along the street). Press H to see them.
+  porchHitHalf: 26,          // door + porch + front steps: generous, fair at full speed
+  mailboxHalf: 6,            // mailbox: small, it's the high-value shot
+  paperHalf: 4,              // a paper's own half-length; touching the porch zone counts
+  windowGap: 4,              // windows start this far beyond the porch zone, so they never overlap
+  introTime: 2.6,            // "MONDAY · 8 SUBSCRIBERS" banner
+  bannerTime: 2.4,
+  outroTime: 1.4,            // ride-out after the bonus before the summary
+
+  // Scoring
+  pointsPorch: 300,
+  pointsMailbox: 700,
+  pointsVandalWindow: 300,   // non-subscriber window
+  pointsProp: 300,           // trash can / fence / lawn ornament at a non-subscriber
+  pointsBonusTarget: 300,
+  pointsBonusClear: 1000,
+  perfectMultiplier: 2,      // perfect day multiplies the day's route points
+
+  // Lives: crashing is the only way to lose. 1 = one crash ends the run
+  // (no hearts in the HUD); more than 1 respawns you with a short blink.
+  lives: 1,
+  respawnInvuln: 2,          // seconds of blinking invulnerability after a crash
+  respawnClear: 420,         // obstacles this close are removed on respawn
+
+  // Bonus course
+  bonusGap: 380,             // road between the last house and the start line
+  bonusDuration: 12,         // seconds of course (at the day's speed)
+  bonusWeights: { jump: 2, targets: 2, slalom: 1 },
+  targetHalf: 10,            // target hit half-length along the street
+  jumpTime: 0.85,
+  jumpHeight: 34,
+
+  // Obstacles
+  graceTime: 10,             // Monday: seconds with no obstacles (hint is shown)
+  obstacleGapStart: 520,     // world distance between obstacles at level 0
+  obstacleGapMin: 210,
+  obstacleGapMul: 0.9,       // gap multiplier per level (each day + each speed-up)
+  weekObstacleMul: 0.88,     // and per week, so every week is busier than the last
+  obstacleGapFloor: 130,     // obstacles never get closer than this (keeps it survivable)
+  dogSpeedMin: 110,
+  dogSpeedMax: 145,
+  dogRunLeadMin: 0.6,        // seconds before the bike arrives that a dog bolts
+  dogRunLeadMax: 1.0,
+  skaterSpeed: 80,           // skater rolls forward (slower than you)
+  skaterWeave: 28,
+  skaterWeaveFreq: 1.8,
+  bikeHalfW: 8,
+  bikeHalfL: 15,
+  hitForgiveness: 0.8,       // <1 shrinks hitboxes so near-misses feel fair
+
+  // Juice
+  shakeCrash: 14,
+  shakeWindow: 6,
+  shakeMailbox: 3,
+  shakeDecay: 40,
+  particleCount: 14,
+  popLife: 1.0,
+  crashDelay: 0.9,           // crash animation before respawn / game over
+  restartLock: 0.35,         // ignore taps this long after an overlay appears
+
+  spawnMargin: 220,          // spawn this far above the top of the screen
+
+  // Kansas City extras (per-day colors/props/obstacle mixes live in THEMES)
+  joggerSpeed: 70,           // joggers run toward you
+  streetcarLead: 1.9,        // seconds before you arrive that the streetcar starts across
+  streetcarWarn: 1.2,        // bell + flashing lights this much earlier
+  streetcarClear: 95,        // its centre is this far past the middle when you arrive
+  smokeDrift: 55,            // sideways speed of BBQ smoke
+  smokeFollow: 0.55,         // smoke drifts up the road at this fraction of your speed (lingers)
+  smokeLife: 4.5,
+  smokeMax: 2,
+  skylineHeight: 92,         // River Market skyline band at the top of the screen
+};
+
+const BEST_KEY = 'routeRush.best';
+const DAY_NAMES = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
+
+
+// ---------------------------------------------------------------------
+// 1b. KANSAS CITY THEMES
+// One entry per day (Monday..Sunday). `bonus` themes that day's bonus
+// course (what you jump, what the targets are, who lines the street).
+// The street layout and subscribers
+// carry over between days; each day re-skins every house slot in that
+// neighborhood's styles. Weights are relative ({ a: 3, b: 1 } = 3:1).
+// ---------------------------------------------------------------------
+const BASE_GROUND = {
+  grass: '#5d9e4a', grassStripe: '#56953f', grassLight: '#79b85a', grassDark: '#4b8a3b',
+  sidewalk: '#cfcabe', sidewalkJoint: '#b6b0a2', curb: '#ece8de',
+  street: '#3b3f47', streetDark: '#32353c', streetLight: '#4a4e57', laneLine: '#f2c94c',
+};
+const FALL_LEAVES = ['#e07a2e', '#c9452f', '#e8b33a', '#a5502a'];
+
+const THEMES = [
+  {
+    name: 'WALDO',                                        // Monday: quiet bungalows, easiest
+    houses: { bungalow: 6, shirtwaist: 3, tudor: 1 },
+    ground: { ...BASE_GROUND },
+    trees: { green: 5, orange: 1, gold: 1 },              // canopy colors (see LEAF_PALETTES)
+    leaves: 0.08, leafColors: FALL_LEAVES,                // fallen leaves on lawns (0..1)
+    decor: { tree: 6, bush: 3, fountain: 1, smoker: 2 },  // what fills the gaps between houses
+    retainingWalls: 0.3, flags: 0, murals: 0, muralColors: [],
+    obstacles: { dog: 3, pothole: 3, cone: 2, car: 1, skater: 1 },
+    obstacleGapScale: 1.35,                               // >1 = obstacles further apart
+    smoke: 0.1,                                           // BBQ smoke puffs per smoker per second
+    streetcars: 0, skyline: false,
+    bonus: { jumps: { cones: 2, car: 1, fountain: 1 }, targets: { mailboxes: 3, newsstand: 1, smoker: 2 }, sideline: 'joggers', sidelineGap: 70, murals: 0 },
+  },
+  {
+    name: 'BROOKSIDE',                                    // Tuesday: Tudors, big fall trees, joggers
+    houses: { tudor: 6, shirtwaist: 2, bungalow: 2 },
+    ground: { ...BASE_GROUND, grass: '#6b9a44', grassStripe: '#64913e', grassLight: '#8aab4f', grassDark: '#55803a' },
+    trees: { green: 2, orange: 3, red: 3, gold: 2 },
+    leaves: 0.45, leafColors: FALL_LEAVES,
+    decor: { tree: 9, bush: 2, fountain: 1 },
+    retainingWalls: 0.5, flags: 0, murals: 0, muralColors: [],
+    obstacles: { jogger: 5, dog: 2, pothole: 2, car: 1, cone: 1 },
+    obstacleGapScale: 1.15, smoke: 0, streetcars: 0, skyline: false,
+    bonus: { jumps: { cones: 1, car: 1, fountain: 1 }, targets: { mailboxes: 3, newsstand: 1, fountain: 1 }, sideline: 'joggers', sidelineGap: 55, murals: 0 },
+  },
+  {
+    name: 'PLAZA',                                        // Wednesday: Spanish style, red tile, fountains
+    houses: { spanish: 8, tudor: 1 },
+    ground: { ...BASE_GROUND, grass: '#58a24c', grassStripe: '#519a46', sidewalk: '#e2d3b8', sidewalkJoint: '#c8b896', curb: '#f0e6d2', street: '#3f3a3a', streetDark: '#353030', streetLight: '#4d4747' },
+    trees: { green: 5, gold: 1 },
+    leaves: 0.1, leafColors: FALL_LEAVES,
+    decor: { fountain: 5, tree: 3, bush: 2 },
+    retainingWalls: 0.4, flags: 0, murals: 0, muralColors: [],
+    obstacles: { median: 3, car: 2, skater: 2, pothole: 2, cone: 2 },
+    obstacleGapScale: 1.05, smoke: 0, streetcars: 0, skyline: false,
+    bonus: { jumps: { fountain: 3, cones: 1 }, targets: { fountain: 3, sign: 1, newsstand: 1 }, sideline: null, murals: 0 },
+  },
+  {
+    name: 'WESTPORT',                                     // Thursday: houses + storefronts, more cars
+    houses: { storefront: 5, bungalow: 2, shirtwaist: 2 },
+    ground: { ...BASE_GROUND, grass: '#5a9446', grassStripe: '#538c40', sidewalk: '#c4c0b8', sidewalkJoint: '#a9a49a', street: '#36393f' },
+    trees: { green: 4, orange: 1 },
+    leaves: 0.08, leafColors: FALL_LEAVES,
+    decor: { tree: 3, bush: 2, smoker: 3 },
+    retainingWalls: 0.2, flags: 0, murals: 0, muralColors: [],
+    obstacles: { car: 6, skater: 2, pothole: 2, cone: 2, dog: 1 },
+    obstacleGapScale: 0.95, smoke: 0.15, streetcars: 0, skyline: false,
+    bonus: { jumps: { car: 2, cones: 2 }, targets: { sign: 3, newsstand: 2, smoker: 1 }, sideline: 'patios', lights: true, murals: 0 },
+  },
+  {
+    name: '18TH & VINE',                                  // Friday: brick blocks with jazz murals
+    houses: { brickblock: 6, storefront: 3, shirtwaist: 1 },
+    ground: { ...BASE_GROUND, grass: '#4f8a42', grassStripe: '#49823d', sidewalk: '#b9b2a6', sidewalkJoint: '#9d968a', street: '#2f3238', streetDark: '#282a30', streetLight: '#3c3f46' },
+    trees: { green: 4, gold: 1 },
+    leaves: 0.05, leafColors: FALL_LEAVES,
+    decor: { tree: 3, bush: 1, smoker: 4 },
+    retainingWalls: 0, flags: 0, murals: 0.85,
+    muralColors: [
+      ['#2b2d5c', '#ffd23f', '#ff5a5f', '#3ddc84'],
+      ['#7a2e5c', '#f2c94c', '#2ec4b6', '#ff8c42'],
+      ['#1f4e5f', '#e8a33d', '#f15bb5', '#9fd3f0'],
+    ],
+    obstacles: { car: 3, pothole: 3, cone: 3, skater: 2, dog: 1 },
+    obstacleGapScale: 0.9, smoke: 0.2, streetcars: 0, skyline: false,
+    bonus: { jumps: { cones: 2, car: 1 }, targets: { sign: 2, smoker: 2, newsstand: 1 }, sideline: null, murals: 1 },
+  },
+  {
+    name: 'RIVER MARKET',                                 // Saturday: lofts, streetcar, skyline
+    houses: { loft: 6, brickblock: 3, storefront: 2 },
+    ground: { ...BASE_GROUND, grass: '#4f8a42', grassStripe: '#49823d', sidewalk: '#a8644a', sidewalkJoint: '#8a4c38', curb: '#d8cfc0', street: '#34363c' },
+    trees: { green: 4, orange: 1 },
+    leaves: 0.05, leafColors: FALL_LEAVES,
+    decor: { tree: 3, bush: 2, smoker: 1 },
+    retainingWalls: 0, flags: 0, murals: 0.2,
+    muralColors: [['#3a3f6a', '#ffd23f', '#ff8c42', '#9fd3f0']],
+    obstacles: { car: 3, pothole: 3, cone: 3, skater: 2 },
+    obstacleGapScale: 0.85, smoke: 0.1,
+    streetcars: 3,                                        // timed crossings on this day's route
+    skyline: true, sky: ['#1e2246', '#4a3f7a', '#d07a5a'],
+    bonus: { jumps: { cones: 2, car: 2 }, targets: { newsstand: 2, sign: 2, mailboxes: 1 }, sideline: null, tracks: 2, murals: 0.2 },
+  },
+  {
+    name: 'GAME DAY',                                     // Sunday: red & gold, tailgates, hardest
+    houses: { bungalow: 4, shirtwaist: 3, tudor: 2 },
+    ground: { ...BASE_GROUND, grass: '#4fa04a', grassStripe: '#479542', laneLine: '#ffd23f' },
+    trees: { orange: 3, red: 2, gold: 2, green: 2 },
+    leaves: 0.25, leafColors: FALL_LEAVES,
+    decor: { crowd: 5, grill: 4, tree: 2 },
+    retainingWalls: 0.3, flags: 0.85, murals: 0, muralColors: [],
+    obstacles: { fan: 5, car: 3, cone: 2, pothole: 2, dog: 1 },
+    obstacleGapScale: 0.72, smoke: 0.25, streetcars: 0, skyline: false,
+    bonus: { jumps: { car: 2, cones: 2 }, targets: { smoker: 3, mailboxes: 1, sign: 1 }, sideline: 'crowd', sidelineGap: 60, murals: 0 },
+  },
+];
+function theme() { return THEMES[game.day] || THEMES[0]; }
+
+// House looks. Every style keeps the same footprint, porch, mailbox and
+// window hit areas; only the drawing changes.
+//   finish: brick | shirtwaist (stone/brick lower, siding upper) | tudor | stucco
+//   roof:   gable (roofH = height) | tile (gable with clay tile rows) | flat
+//   porch:  standard | deep (columns on stone piers) | stoop (shop awning) | canopy
+const HOUSE_STYLES = {
+  bungalow: {
+    finish: 'brick', roof: 'gable', roofH: 16, wallH: [30, 36], porch: 'deep', door: 'plain', chimney: 0.6, yard: true,
+    walls: ['#9c4a3a', '#8a5a44', '#7a3f33', '#a5623f'], roofs: ['#4a4f57', '#5b4a3f', '#3f4a3f'], trims: ['#efe6d6'],
+  },
+  shirtwaist: {
+    finish: 'shirtwaist', roof: 'gable', roofH: 24, wallH: [44, 52], porch: 'standard', door: 'plain', chimney: 0.4, yard: true,
+    walls: ['#e9e2cf', '#cfdde6', '#e8d8a8', '#d9e4d0'], lowers: ['#b9ab8f', '#a8543f', '#c7bba0'],
+    roofs: ['#5b6b7a', '#4a4f57', '#6b4f4f'], trims: ['#f6f3ea'],
+  },
+  tudor: {
+    finish: 'tudor', roof: 'gable', roofH: 40, wallH: [38, 46], porch: 'standard', door: 'arch', chimney: 0.8, yard: true,
+    walls: ['#efe4c8', '#f2ead6'], roofs: ['#4a3f3a', '#3f3a45', '#5a4436'], trims: ['#3b2a20', '#2e2a28'],
+  },
+  spanish: {
+    finish: 'stucco', roof: 'tile', roofH: 14, wallH: [32, 40], porch: 'standard', door: 'arch', chimney: 0.2, yard: true,
+    walls: ['#f2dfc2', '#efd2b0', '#f5e6d0'], roofs: ['#c45a35', '#b8502f', '#cf6a3f'], trims: ['#6b4226'],
+  },
+  storefront: {
+    finish: 'brick', roof: 'flat', wallH: [34, 40], porch: 'stoop', door: 'glass', paved: true,
+    walls: ['#a5623f', '#6a7f8a', '#c9a55a', '#7a4f6a'], roofs: ['#55585f'], trims: ['#f6f3ea'],
+    awnings: ['#d64545', '#2f9e6b', '#3a7bd5', '#e8a33d'],
+  },
+  brickblock: {
+    finish: 'brick', roof: 'flat', wallH: [40, 50], porch: 'canopy', door: 'plain', paved: true, mural: true,
+    walls: ['#8a3f30', '#9c5a3a', '#6e3a2e'], roofs: ['#4a4d55'], trims: ['#e8dcc0'],
+  },
+  loft: {
+    finish: 'brick', roof: 'flat', wallH: [56, 66], porch: 'canopy', door: 'glass', paved: true, mural: true, tower: 0.35,
+    walls: ['#7a3f33', '#8a5a44', '#5f4a40'], roofs: ['#3f4248'], trims: ['#2b2b35', '#e8dcc0'],
+  },
+};
+
+
+// ---------------------------------------------------------------------
+// 2. LAYOUT / COLORS
+// Layout is described for the LEFT side; the right side is mirrored.
+// ---------------------------------------------------------------------
+const L = {
+  houseX0: 16, wallX: 78,          // house footprint; wallX is the street-facing wall
+  eaveX0: 12, eaveX1: 83, ridgeX: 47,
+  porchX1: 96, porchHalf: 22, stepsX: 102,   // porch deck + front steps (drawn); hit area is CONFIG.porchHitHalf
+  sidewalkX0: 110, sidewalkX1: 130,
+  streetX0: 130, streetX1: 270,
+  mailboxX: 104,
+  fenceX: 100, decoX: 90, trashX: 118, targetX: 118,
+  bikeMinX: 148, bikeMaxX: 252,
+};
+
+const COLORS = {
+  bg: '#16202c',
+  grass: '#5d9e4a', grassStripe: '#56953f',
+  sidewalk: '#cfcabe', sidewalkJoint: '#b6b0a2', curb: '#ece8de',
+  grassLight: '#79b85a', grassDark: '#4b8a3b',
+  street: '#3b3f47', streetDark: '#32353c', streetLight: '#4a4e57', laneLine: '#f2c94c',
+  trim: '#f6f3ea', outline: '#1a1c2c', shadow: 'rgba(0,0,0,0.22)', brick: '#9c4a3a',
+  window: '#7fc4ea', windowShine: '#c9ecfb', windowBroken: '#27303b', crack: '#cfe9f7',
+  doorPlain: '#7a5a43', doorSub: '#ff5a5f',
+  porch: '#c79a6b', path: '#bdb6a6', post: '#6b5440',
+  mailbox: '#6a707b', mailboxSub: '#ffd23f', flag: '#3ddc84',
+  paper: '#f7f4ea', tire: '#1d1f24', shirt: '#ff8c42',
+  cars: ['#d64545', '#3a7bd5', '#e0e0e0', '#2f9e6b', '#e8a33d'],
+  carGlass: '#2a3b52', tail: '#ff4b4b',
+  trash: '#5f7f6a', garbage: ['#c9b458', '#8a6a4a', '#e0e0e0'], fence: '#f4efe2',
+  ramp: '#e8a33d', rampStripe: '#2b2b35', barrier: '#f4f1ea', barrierStripe: '#d64545',
+  perfect: '#ffd23f', good: '#3ddc84', bad: '#ff5a5f', neutral: '#ffffff', glass: '#9fd3f0',
+  stone: '#b9ab8f', limestone: '#d8cfb8', water: '#4f9fd8', waterLight: '#bfe6ff',
+  smoke: '#d9d6d0', smokeDark: '#b9b5ae', skyline: '#1d2033',
+  rail: '#9aa0a8', tie: '#5a4130', streetcar: '#e9ecef', streetcarAccent: '#2a6f97',
+  flagRed: '#d0312d', flagGold: '#f2b630',
+};
+
+
+// ---------------------------------------------------------------------
+// 3. SETUP
+// ---------------------------------------------------------------------
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// Low-res pixel buffer the world is drawn into (see RENDER).
+const buf = document.createElement('canvas');
+const pix = buf.getContext('2d');
+const PAD = 8;   // spare art pixels around the buffer so screen shake never shows an edge
+
+const view = { W: CONFIG.gameWidth, H: 700, scale: 1, offX: 0, offY: 0, dpr: 1, bikeY: 500, safeTop: 0, camZ: 0 };
+
+function resize() {
+  const cssW = window.innerWidth;
+  const cssH = window.innerHeight;
+  view.dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+  canvas.width = Math.round(cssW * view.dpr);
+  canvas.height = Math.round(cssH * view.dpr);
+
+  view.W = CONFIG.gameWidth;
+  const ps = CONFIG.pixelSize;
+  view.H = Math.round(clamp(view.W * cssH / cssW, CONFIG.minGameHeight, CONFIG.maxGameHeight) / ps) * ps;
+  view.scale = Math.min(cssW / view.W, cssH / view.H);
+  view.offX = (cssW - view.W * view.scale) / 2;
+  view.offY = (cssH - view.H * view.scale) / 2;
+  view.bikeY = Math.round(view.H * CONFIG.bikeScreenY / ps) * ps;
+
+  buf.width = view.W / ps + PAD * 2;
+  buf.height = view.H / ps + PAD * 2;
+  pix.imageSmoothingEnabled = false;
+
+  const sat = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sat')) || 0;
+  view.safeTop = Math.max(0, sat - view.offY) / view.scale;
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', resize);
+resize();
+
+const storage = {
+  get(key, fallback) {
+    try { const v = localStorage.getItem(key); return v === null ? fallback : v; } catch (e) { return fallback; }
+  },
+  set(key, value) {
+    try { localStorage.setItem(key, String(value)); } catch (e) { /* storage blocked: ignore */ }
+  },
+};
+
+function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function rand(a, b) { return a + Math.random() * (b - a); }
+function pick(arr) { return arr[(Math.random() * arr.length) | 0]; }
+function damp(a, b, k, dt) { return a + (b - a) * (1 - Math.exp(-k * dt)); }
+function weightedPick(weights, rng = Math.random) {
+  let total = 0;
+  for (const k in weights) total += weights[k];
+  let r = rng() * total;
+  for (const k in weights) { r -= weights[k]; if (r <= 0) return k; }
+  return Object.keys(weights)[0];
+}
+function pickR(arr, rng) { return arr[(rng() * arr.length) | 0]; }
+// Small seeded RNG so a house slot looks the same every time a day is played.
+function mulberry32(a) {
+  return function () {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+// Mirror a left-side layout x to the given side (-1 left, +1 right).
+function sideX(side, x) { return side < 0 ? x : view.W - x; }
+// World z -> screen y (camZ is game.dist snapped to the pixel grid).
+function sy(z) { return view.bikeY - (z - view.camZ); }
+
+
+// ---------------------------------------------------------------------
+// 4. GAME STATE
+// ---------------------------------------------------------------------
+// state: 'title' | 'playing' | 'crashed' | 'summary' | 'over'
+// phase (while playing): 'route' -> 'bonus' -> 'outro'
+const game = { state: 'title' };
+const bike = { x: 200, vx: 0, spin: 0, crashed: false, airT: 0, h: 0, invuln: 0 };
+const input = { steerTarget: 200, left: false, right: false };
+const debug = { hitAreas: false };   // H toggles hit-area outlines
+let best = parseInt(storage.get(BEST_KEY, '0'), 10) || 0;
+
+function resetGame() {
+  Object.assign(game, {
+    score: 0, lives: CONFIG.lives, day: 0, week: 1, totalDelivered: 0,
+    street: buildStreet(),
+    overTitle: '', overReason: '', overShownAt: 0,
+  });
+  setupDay();
+}
+
+function startGame() {
+  resetGame();
+  if (tilt.enabled) calibrateTilt();   // "level" = how the phone is held right now
+  game.state = 'playing';
+  hideOverlay();
+}
+
+// Fresh world for game.day; score, lives and the street carry over.
+function setupDay() {
+  Object.assign(game, {
+    phase: 'route', time: 0, dist: 0, level: 0, housesPassedToday: 0, phaseTimer: 0,
+    throwCooldown: 0,
+    shake: 0, flash: 0, flashColor: COLORS.bad, crashTimer: 0, crashOutcome: '', crashReason: '',
+    warnedObstacles: false, banners: [],
+    houses: [], decor: [], obstacles: [], ramps: [], targets: [], lines: [], tracks: [], smokes: [], driveways: [], lights: [],
+    flying: [], groundPapers: [], particles: [], pops: [],
+    stats: {
+      subs: 0, deliveries: 0, mailbox: 0, windows: 0, subWindows: 0, props: 0, targets: 0,
+      routePoints: 0, perfectBonus: 0, bonusPoints: 0, startScore: game.score,
+      perfect: false, bonusClean: false, added: 0,
+    },
+  });
+  Object.assign(bike, { x: 200, vx: 0, spin: 0, crashed: false, airT: 0, h: 0, invuln: 0 });
+  input.steerTarget = 200;
+  pointers.clear();
+  layoutDay();
+  game.speed = targetSpeed();
+  pushBanner(DAY_NAMES[game.day], `${game.stats.subs} SUBSCRIBER${game.stats.subs === 1 ? '' : 'S'}`, COLORS.neutral, CONFIG.introTime, `${theme().name} · WEEK ${game.week}`);
+}
+
+function speedFor(day, housesPassed) {
+  const lvl = Math.floor(housesPassed / CONFIG.housesPerLevel);
+  const base = CONFIG.startSpeed + (game.week - 1) * CONFIG.speedPerWeek;
+  return Math.min(CONFIG.maxSpeed, base + day * CONFIG.speedPerDay + lvl * CONFIG.speedPerLevel);
+}
+// Very first Monday only: a few obstacle-free seconds + the controls hint.
+function isFirstDay() { return game.day === 0 && game.week === 1; }
+function targetSpeed() { return speedFor(game.day, game.housesPassedToday); }
+
+function pushBanner(title, sub, color, time, place) {
+  game.banners.push({ title, sub, color, place, t: time, max: time });
+}
+
+function crash(o) {
+  bike.crashed = true; bike.airT = 0; bike.h = 0;
+  game.state = 'crashed';
+  game.crashTimer = CONFIG.crashDelay;
+  pointers.clear();
+  game.shake = CONFIG.shakeCrash;
+  game.flash = 0.35; game.flashColor = COLORS.bad;
+  burst(bike.x, game.dist, '#ffffff', CONFIG.particleCount + 6, 160);
+  burst(bike.x, game.dist, COLORS.shirt, 8, 120);
+  if (game.phase !== 'route') {
+    // Bonus course: the bonus just ends, no life lost.
+    game.bonus.clean = false;
+    game.crashOutcome = 'bonusEnd';
+    popText('BONUS OVER', bike.x, game.dist + 40, COLORS.bad, 26);
+    return;
+  }
+  game.lives--;
+  game.crashReason = CRASH_REASONS[o.type] || 'Wipeout!';
+  game.crashOutcome = game.lives > 0 ? 'respawn' : 'over';
+  popText(game.lives > 0 ? `CRASH! ${game.lives} LEFT` : 'CRASH!', bike.x, game.dist + 40, COLORS.bad, 26);
+}
+
+function afterCrash() {
+  bike.crashed = false; bike.spin = 0;
+  if (game.crashOutcome === 'over') { endGame('Wipeout!', game.crashReason); return; }
+  if (game.crashOutcome === 'bonusEnd') { showDaySummary(); return; }
+  bike.invuln = CONFIG.respawnInvuln;
+  game.obstacles = game.obstacles.filter((o) => Math.abs(o.z - game.dist) > CONFIG.respawnClear);
+  game.state = 'playing';
+}
+
+function endGame(title, reason) {
+  game.overTitle = title;
+  game.overReason = reason;
+  showGameOver();
+}
+
+const CRASH_REASONS = {
+  dog: 'A dog got you.',
+  pothole: 'Swallowed by a pothole.',
+  car: 'You kissed a parked car.',
+  skater: 'Tangled with a skateboarder.',
+  fountain: 'Took a dip in a fountain.',
+  cone: 'Plowed through the construction cones.',
+  jogger: 'Collided with a jogger.',
+  fan: 'Bowled over by an excited fan.',
+  median: 'Jumped the median. Badly.',
+  streetcar: 'Lost a race with the streetcar.',
+};
+
+
+// ---------------------------------------------------------------------
+// 5. INPUT
+// Each pointer starts "pending". It becomes a drag once it moves more than
+// tapMaxMove; only drags steer. On release, a pending pointer that lasted
+// <= tapMaxTime is a tap and throws. So a tap never steers and a drag
+// never throws. Multiple fingers are tracked independently.
+// ---------------------------------------------------------------------
+const pointers = new Map();
+
+// --- Tilt steering ---
+// Phones steer by tilting left/right (gamma in portrait). "Level" is how the
+// player holds the phone when a run (or day) starts; inside the dead zone the
+// bike rides straight. Tilt sets sideways SPEED, so it's smooth and analog.
+// No sensor, no permission, or no https -> drag-to-steer takes over.
+const tilt = {
+  listening: false, enabled: false, denied: false,
+  raw: 0, smooth: 0, base: 0, last: 0,
+  needsPermission: typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function',
+};
+const isTouchDevice = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+
+function onOrientation(e) {
+  if (e.gamma == null || e.beta == null) return;
+  const angle = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+  tilt.raw = angle === 90 ? e.beta : angle === -90 || angle === 270 ? -e.beta : e.gamma;
+  tilt.last = performance.now();
+  if (!tilt.enabled) { tilt.enabled = true; calibrateTilt(); updateSteerUI(); }
+}
+function listenForTilt() {
+  if (tilt.listening || !isTouchDevice) return;
+  tilt.listening = true;
+  window.addEventListener('deviceorientation', onOrientation);
+}
+// iPhone only lets a page read motion after the player taps "enable".
+async function requestTilt() {
+  try {
+    if ((await DeviceOrientationEvent.requestPermission()) === 'granted') listenForTilt();
+    else tilt.denied = true;
+  } catch (e) { tilt.denied = true; }
+  updateSteerUI();
+}
+function tiltActive() { return tilt.enabled && performance.now() - tilt.last < 1000; }
+function calibrateTilt() { tilt.base = tilt.smooth = tilt.raw; }
+// Sideways steering speed from tilt: dead zone first, then linear up to a cap.
+function tiltSteer() {
+  let a = tilt.smooth - tilt.base;
+  const dz = CONFIG.tiltDeadZone;
+  a = Math.abs(a) <= dz ? 0 : a - Math.sign(a) * dz;
+  return clamp(a, -CONFIG.tiltMaxAngle, CONFIG.tiltMaxAngle) * CONFIG.tiltSensitivity;
+}
+if (!tilt.needsPermission && window.isSecureContext) listenForTilt();
+
+// --- Touch / mouse ---
+// With tilt on, every touch is a throw (left half = left, right half =
+// right), fired on touch-down for speed. Without tilt, a pointer is "pending"
+// until it moves more than tapMaxMove (then it's a drag and steers) or lifts
+// within tapMaxTime (then it's a tap and throws). Taps never steer.
+function toLogicalX(clientX) {
+  const rect = canvas.getBoundingClientRect();
+  return (clientX - rect.left - view.offX) / view.scale;
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  if (game.state !== 'playing') return;
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  e.preventDefault();
+  if (tiltActive()) {
+    throwPaper(toLogicalX(e.clientX) < view.W / 2 ? -1 : 1);
+    return;
+  }
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+  pointers.set(e.pointerId, {
+    startX: e.clientX, startY: e.clientY, lastX: e.clientX,
+    t0: performance.now(), dragging: false,
+  });
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  if (!p.dragging) {
+    const dx = e.clientX - p.startX;
+    const dy = e.clientY - p.startY;
+    if (dx * dx + dy * dy > CONFIG.tapMaxMove * CONFIG.tapMaxMove) {
+      p.dragging = true;
+      p.lastX = p.startX;   // count the movement so far so steering doesn't lag
+    }
+  }
+  if (p.dragging) {
+    const d = (e.clientX - p.lastX) / view.scale;
+    input.steerTarget = clamp(input.steerTarget + d * CONFIG.dragSensitivity, L.bikeMinX, L.bikeMaxX);
+    p.lastX = e.clientX;
+  }
+});
+
+function endPointer(e, cancelled) {
+  const p = pointers.get(e.pointerId);
+  if (!p) return;
+  pointers.delete(e.pointerId);
+  if (cancelled || p.dragging) return;
+  if (performance.now() - p.t0 <= CONFIG.tapMaxTime) {
+    throwPaper(toLogicalX(p.startX) < view.W / 2 ? -1 : 1);
+  }
+}
+canvas.addEventListener('pointerup', (e) => endPointer(e, false));
+canvas.addEventListener('pointercancel', (e) => endPointer(e, true));
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+document.addEventListener('gesturestart', (e) => e.preventDefault());   // iOS pinch
+
+const KEYS_LEFT = ['ArrowLeft'];
+const KEYS_RIGHT = ['ArrowRight'];
+const KEYS_THROW_LEFT = ['KeyA', 'KeyZ'];
+const KEYS_THROW_RIGHT = ['KeyD', 'KeyX'];
+
+window.addEventListener('keydown', (e) => {
+  if (KEYS_LEFT.includes(e.code)) { input.left = true; e.preventDefault(); }
+  else if (KEYS_RIGHT.includes(e.code)) { input.right = true; e.preventDefault(); }
+  if (e.repeat) return;
+  if (e.code === 'KeyH') { debug.hitAreas = !debug.hitAreas; return; }
+  if (KEYS_THROW_LEFT.includes(e.code)) throwPaper(-1);
+  else if (KEYS_THROW_RIGHT.includes(e.code)) throwPaper(1);
+  else if (e.code === 'Space' || e.code === 'Enter') {
+    e.preventDefault();
+    tryStartFromOverlay();
+  }
+});
+window.addEventListener('keyup', (e) => {
+  if (KEYS_LEFT.includes(e.code)) input.left = false;
+  else if (KEYS_RIGHT.includes(e.code)) input.right = false;
+});
+window.addEventListener('blur', () => { input.left = input.right = false; pointers.clear(); });
+
+
+// ---------------------------------------------------------------------
+// 6. SPAWNING
+// The street (house layout + who subscribes) is built once per game and
+// re-ridden every day. layoutDay() turns it into this day's world.
+// ---------------------------------------------------------------------
+function buildStreet() {
+  const street = [];
+  for (const side of [-1, 1]) {
+    for (let i = 0; i < CONFIG.housesPerSide; i++) {
+      const len = rand(CONFIG.houseLenMin, CONFIG.houseLenMax);
+      street.push({
+        side, len, sub: false, newSub: false,
+        seed: (Math.random() * 1e9) | 0,   // drives this slot's look each day
+        props: makeProps(len),
+      });
+    }
+  }
+  const shuffled = street.slice().sort(() => Math.random() - 0.5);
+  for (const t of shuffled.slice(0, CONFIG.startSubscribers)) t.sub = true;
+  return street;
+}
+
+// Props sit where they don't block the mailbox (22% along) or the porch (centre).
+function makeProps(len) {
+  const props = [];
+  if (Math.random() < CONFIG.propChance) props.push({ type: 'trash', lx: L.trashX, off: len * 0.06 + 4, hw: 5, hz: 5 });
+  const r = Math.random();
+  if (r < 0.3) props.push({ type: 'fence', lx: L.fenceX, off: len * 0.86, hw: 3, hz: 14 });
+  else if (r < 0.55) props.push({ type: 'flamingo', lx: L.decoX, off: len * 0.8, hw: 4, hz: 4 });
+  else if (r < 0.75) props.push({ type: 'gnome', lx: L.decoX, off: len * 0.8, hw: 4, hz: 4 });
+  return props;
+}
+
+// Houses are spaced by TIME: one roughly every houseInterval seconds per side
+// at the speed you'll be riding there, so faster days spread them out instead
+// of cramming them together. The gaps become side yards.
+function layoutDay() {
+  const th = theme(), z0 = CONFIG.routeLeadIn;
+  let end = 0;
+  for (const side of [-1, 1]) {
+    const slots = game.street.filter((t) => t.side === side);
+    let z = z0 + (side > 0 ? CONFIG.houseInterval * speedFor(game.day, 0) * 0.5 : 0);   // sides alternate
+    slots.forEach((tpl, i) => {
+      const rng = mulberry32(tpl.seed + game.day * 7919);   // same slot + day = same look
+      const h = makeHouse(tpl, side, z, tpl.len, rng, false);
+      game.houses.push(h);
+      if (tpl.sub) game.stats.subs++;
+      const step = houseStep(tpl.len, speedFor(game.day, i * 2), rng);
+      if (i < slots.length - 1) decorateGap(side, z + tpl.len, z + step, rng, HOUSE_STYLES[h.style]);   // the bonus course continues the street after the last one
+      end = Math.max(end, z + tpl.len);
+      z += step;
+    });
+  }
+  game.routeEndZ = end + 40;
+  addTrees(-view.H, z0 - 40);
+
+  for (let k = 1; k <= th.streetcars; k++) addStreetcar(z0 + (end - z0) * k / (th.streetcars + 1));
+
+  game.nextObstacleZ = z0 + (isFirstDay() ? CONFIG.graceTime * CONFIG.startSpeed : 300);
+
+  const bz0 = game.routeEndZ + CONFIG.bonusGap;
+  const bonusSpeed = speedFor(game.day, CONFIG.housesPerSide * 2);
+  buildBonus(bz0, bz0 + CONFIG.bonusDuration * bonusSpeed);
+}
+
+// Start-to-start distance for the next house at this speed.
+function houseStep(len, speed, rng) {
+  const jitter = 1 + (rng() * 2 - 1) * CONFIG.houseIntervalJitter;
+  return Math.max(len + CONFIG.yardMin, CONFIG.houseInterval * speed * jitter);
+}
+
+// One house in this day's neighborhood style. Scenery houses (bonus course)
+// have no subscriber, mailbox or props and can't be scored on.
+function makeHouse(tpl, side, z, len, rng, scenery) {
+  const th = theme();
+  const style = weightedPick(th.houses, rng), st = HOUSE_STYLES[style];
+  const muralChance = scenery ? th.bonus.murals : th.murals;
+  return {
+    tpl, side, z, len, scenery,
+    sub: !scenery && tpl.sub, newSub: !scenery && tpl.newSub,
+    delivered: false, passed: false, windows: [false, false],
+    mailZ: z + len * 0.22,
+    style, seed: scenery ? (rng() * 1e9) | 0 : tpl.seed,
+    wall: pickR(st.walls, rng), roof: pickR(st.roofs, rng), trim: pickR(st.trims, rng),
+    lower: st.lowers ? pickR(st.lowers, rng) : null,
+    accent: st.awnings ? pickR(st.awnings, rng) : null,
+    wallH: Math.round(lerp(st.wallH[0], st.wallH[1], rng()) / 2) * 2,
+    chimney: rng() < (st.chimney || 0),
+    tower: rng() < (st.tower || 0),
+    retaining: !!st.yard && rng() < th.retainingWalls,
+    flags: rng() < th.flags,
+    mural: st.mural && th.muralColors.length && rng() < muralChance ? pickR(th.muralColors, rng) : null,
+    props: scenery ? [] : tpl.props.map((p) => ({ ...p, z: z + p.off, knocked: false })),
+  };
+}
+
+// Side yard between two houses: maybe a driveway, maybe a fence along the
+// lot line, then trees / fountains / smokers / crowds from the theme.
+function decorateGap(side, za, zb, rng, st) {
+  const gap = zb - za;
+  if (gap < 30) return;
+  let from = za;
+  if (st.yard && gap > 70 && rng() < CONFIG.drivewayChance) {
+    game.driveways.push({ side, z0: za + 8, z1: za + 32 });
+    from = za + 40;
+  }
+  if (st.yard && gap > 90 && rng() < CONFIG.sideFenceChance) game.decor.push({ type: 'sidefence', side, z: zb - 10 });
+  const n = Math.max(1, Math.floor((zb - from) / 95));
+  for (let k = 0; k < n; k++) game.decor.push(makeDecor(side, lerp(from, zb - 12, (k + 0.5) / n), rng));
+}
+
+// Something for the gap between two houses (decor only, papers fly past).
+function makeDecor(side, z, rng) {
+  const th = theme(), type = weightedPick(th.decor, rng);
+  switch (type) {
+    case 'tree': return { type, x: sideX(side, lerp(26, 52, rng())), z, pal: weightedPick(th.trees, rng) };
+    case 'fountain': return { type, x: sideX(side, lerp(66, 78, rng())), z };
+    case 'smoker':
+    case 'grill': return { type, x: sideX(side, lerp(50, 70, rng())), z };
+    case 'crowd': return { type, x: sideX(side, lerp(58, 78, rng())), z, n: 3 + ((rng() * 3) | 0), seed: (rng() * 1e6) | 0 };
+    default: return { type: 'bush', x: sideX(side, lerp(84, 92, rng())), z };
+  }
+}
+
+function addTrees(zFrom, zTo) {
+  const th = theme();
+  for (const side of [-1, 1]) {
+    for (let z = zFrom + rand(0, 60); z < zTo; z += rand(80, 130)) {
+      game.decor.push(Math.random() < 0.75
+        ? { type: 'tree', x: sideX(side, rand(24, 80)), z, pal: weightedPick(th.trees) }
+        : { type: 'bush', x: sideX(side, rand(24, 80)), z });
+    }
+  }
+}
+
+// Streetcar: crosses the road on rails. It starts moving streetcarLead
+// seconds before you arrive (bell + lights streetcarWarn seconds earlier)
+// and is part-way across when you get there: ride on the side it came from.
+function addStreetcar(z) {
+  const dir = Math.random() < 0.5 ? -1 : 1;
+  const car = {
+    type: 'streetcar', z, dir, w: 170, h: 26, x: view.W / 2 - dir * (view.W / 2 + 100),
+    arriveX: view.W / 2 + dir * CONFIG.streetcarClear, active: false, warned: false, vx: 0,
+  };
+  game.obstacles.push(car);
+  game.tracks.push({ z, car });
+}
+function nearTrack(z) { return game.tracks.some((tr) => Math.abs(tr.z - z) < 170); }
+
+// Bonus course: ramps that jump full-width barriers, roadside targets,
+// and half-width barriers to weave through.
+// Bonus course: the same neighborhood keeps going (scenery houses, yards,
+// theme touches) with ramps that jump KC-style obstacles and targets on
+// things that belong on a city street.
+function buildBonus(z0, z1) {
+  const th = theme(), B = th.bonus;
+  game.bonus = { z0, z1, clean: true };
+  game.lines.push({ z: z0 }, { z: z1 });
+  const rng = mulberry32(game.street[0].seed + game.day * 131 + game.week * 977);
+  const speed = speedFor(game.day, CONFIG.housesPerSide * 2);
+
+  for (const side of [-1, 1]) {
+    let z = game.routeEndZ + 40 + (side > 0 ? CONFIG.houseInterval * speed * 0.5 : 0);
+    while (z < z1 + 500) {
+      const len = lerp(CONFIG.houseLenMin, CONFIG.houseLenMax, rng());
+      const h = makeHouse(null, side, z, len, rng, true);
+      game.houses.push(h);
+      const st = HOUSE_STYLES[h.style];
+      if (B.sideline === 'patios' && st.paved) {
+        for (const f of [0.3, 0.7]) game.decor.push({ type: 'patio', x: sideX(side, 94), z: z + len * f, seed: (rng() * 1e6) | 0 });
+      }
+      const step = houseStep(len, speed, rng);
+      decorateGap(side, z + len, z + step, rng, st);
+      z += step;
+    }
+    if (B.lights) game.lights.push({ side, z0: game.routeEndZ, z1: z1 + 400 });
+    if (B.sideline === 'joggers' || B.sideline === 'crowd') {
+      for (let zz = z0 - 150; zz < z1 + 150; zz += B.sidelineGap * lerp(0.8, 1.2, rng())) {
+        game.decor.push(B.sideline === 'joggers'
+          ? { type: 'jogside', x: sideX(side, 126), z: zz, phase: rng() * 6 }
+          : { type: 'crowd', x: sideX(side, 100), z: zz, n: 3 + ((rng() * 3) | 0), seed: (rng() * 1e6) | 0 });
+      }
+    }
+  }
+  for (let k = 0; k < (B.tracks || 0); k++) game.tracks.push({ z: lerp(z0, z1, (k + 0.5) / B.tracks) + 60, car: null });
+
+  const mid = view.W / 2, streetW = L.streetX1 - L.streetX0;
+  let z = z0 + 240, side = rng() < 0.5 ? -1 : 1;
+  while (z < z1 - 260) {
+    switch (weightedPick(CONFIG.bonusWeights, rng)) {
+      case 'jump':
+        addJump(z, weightedPick(B.jumps, rng), rng);
+        z += 380;
+        break;
+      case 'targets':
+        for (let i = 0; i < 3; i++) { addTargets(side, z + i * 100, weightedPick(B.targets, rng)); side = -side; }
+        z += 360;
+        break;
+      case 'slalom':
+        for (let i = 0; i < 3; i++) {
+          game.obstacles.push({ type: 'barrier', x: mid + side * streetW * 0.2, z: z + i * 130, w: streetW * 0.6, h: 8 });
+          side = -side;
+        }
+        z += 460;
+        break;
+    }
+  }
+}
+
+// Ramp, then something to jump: a fountain, a parked car across the road, or
+// a row of cones. Cones fill the rest of the road so the jump is the way over.
+function addJump(z, kind, rng) {
+  const mid = view.W / 2, oz = z + 95;
+  game.ramps.push({ x: mid + (rng() < 0.5 ? -1 : 1) * lerp(30, 44, rng()), z, w: 48, h: 34, used: false });
+  let w = 0;   // width of the middle piece; cones overlap its edges so there's no gap to sneak through
+  if (kind === 'fountain') {
+    w = 60;
+    game.obstacles.push({ type: 'fountain', x: mid, z: oz, w, h: 36 });
+  } else if (kind === 'car') {
+    w = 80;
+    game.obstacles.push({ type: 'car', cross: true, x: mid, z: oz, w, h: 34, color: pickR(COLORS.cars, rng) });
+  }
+  for (let x = L.streetX0 + 8; x <= L.streetX1 - 8; x += 14) {
+    if (!w || x <= mid - w / 2 + 6 || x >= mid + w / 2 - 6) game.obstacles.push({ type: 'cone', x, z: oz, w: 12, h: 10 });
+  }
+}
+
+// Roadside targets (+300 each): a row of mailboxes, a sidewalk sign, a
+// newsstand, a BBQ smoker or a fountain basin.
+function addTargets(side, z, kind) {
+  if (kind === 'mailboxes') {
+    for (let i = -1; i <= 1; i++) game.targets.push({ side, lx: 116, z: z + i * 24, hit: false, kind: 'mailbox' });
+    return;
+  }
+  game.targets.push({ side, lx: kind === 'fountain' ? 112 : 116, z, hit: false, kind });
+}
+
+function spawnAhead() {
+  const ahead = game.dist + view.bikeY + CONFIG.spawnMargin;
+  const stop = game.routeEndZ - 120;
+  while (game.nextObstacleZ < ahead && game.nextObstacleZ < stop) {
+    if (!nearTrack(game.nextObstacleZ)) spawnObstacle(game.nextObstacleZ);
+    game.nextObstacleZ += obstacleGap() * rand(0.75, 1.25);
+  }
+}
+
+function obstacleGap() {
+  const gap = CONFIG.obstacleGapStart * Math.pow(CONFIG.obstacleGapMul, game.day + game.level);
+  const weekly = Math.pow(CONFIG.weekObstacleMul, game.week - 1);
+  return Math.max(CONFIG.obstacleGapFloor, Math.max(CONFIG.obstacleGapMin, gap) * theme().obstacleGapScale * weekly);
+}
+
+function spawnObstacle(z) {
+  const type = weightedPick(theme().obstacles);
+  const side = Math.random() < 0.5 ? -1 : 1;
+  switch (type) {
+    case 'dog':
+    case 'fan':   // Game Day fans dart across like dogs do
+      game.obstacles.push({
+        type, z, x: sideX(side, 118), dir: -side, w: type === 'fan' ? 16 : 26, h: type === 'fan' ? 12 : 14,
+        active: false, anim: 0,
+        speed: rand(CONFIG.dogSpeedMin, CONFIG.dogSpeedMax),
+        lead: rand(CONFIG.dogRunLeadMin, CONFIG.dogRunLeadMax),
+      });
+      break;
+    case 'pothole':
+      game.obstacles.push({ type, z, x: rand(L.bikeMinX + 4, L.bikeMaxX - 4), w: 30, h: 22 });
+      break;
+    case 'car':
+      game.obstacles.push({ type, z, x: sideX(side, 152), w: 38, h: 72, color: pick(COLORS.cars) });
+      break;
+    case 'skater': {
+      const x = rand(L.bikeMinX + 20, L.bikeMaxX - 20);
+      game.obstacles.push({ type, z, x, baseX: x, phase: rand(0, Math.PI * 2), w: 18, h: 26 });
+      break;
+    }
+    case 'cone':   // construction taper closing one side of the road
+      for (let i = 0; i < 3; i++) {
+        game.obstacles.push({ type, z: z + i * 22, x: sideX(side, L.streetX0 + 10 + i * 13), w: 12, h: 10 });
+      }
+      break;
+    case 'jogger': {   // runs toward you
+      const x = rand(L.bikeMinX + 8, L.bikeMaxX - 8);
+      game.obstacles.push({ type, z: z + 200, x, baseX: x, phase: rand(0, Math.PI * 2), w: 14, h: 14, anim: 0 });
+      break;
+    }
+    case 'median':   // planted island with a fountain in the middle of the road
+      game.obstacles.push({ type, z, x: view.W / 2, w: 40, h: 90 });
+      break;
+  }
+}
+
+// ---------------------------------------------------------------------
+// 7. UPDATE
+// ---------------------------------------------------------------------
+function update(dt) {
+  updateFx(dt);
+  const banner = game.banners[0];
+  if (banner && game.state === 'playing' && (banner.t -= dt) <= 0) game.banners.shift();
+
+  if (game.state === 'crashed') {
+    game.crashTimer -= dt;
+    bike.spin += dt * 12;
+    if (game.crashTimer <= 0) afterCrash();
+    return;
+  }
+  if (game.state !== 'playing') return;
+
+  game.time += dt;
+  game.throwCooldown = Math.max(0, game.throwCooldown - dt);
+  bike.invuln = Math.max(0, bike.invuln - dt);
+
+  // Difficulty + forward motion
+  const level = Math.floor(game.housesPassedToday / CONFIG.housesPerLevel);
+  if (level > game.level) {
+    game.level = level;
+    popText('FASTER!', view.W / 2, game.dist + 200, COLORS.neutral, 22);
+  }
+  game.speed = damp(game.speed, targetSpeed(), CONFIG.speedEase, dt);
+  game.dist += game.speed * dt;
+
+  // Steering
+  if (tilt.enabled) tilt.smooth = damp(tilt.smooth, tilt.raw, CONFIG.tiltSmoothing, dt);
+  if (tiltActive()) input.steerTarget += tiltSteer() * dt;
+  if (input.left) input.steerTarget -= CONFIG.keySteerSpeed * dt;
+  if (input.right) input.steerTarget += CONFIG.keySteerSpeed * dt;
+  input.steerTarget = clamp(input.steerTarget, L.bikeMinX, L.bikeMaxX);
+  const prevX = bike.x;
+  bike.x = damp(bike.x, input.steerTarget, CONFIG.steerSmoothing, dt);
+  bike.vx = (bike.x - prevX) / dt;
+
+  // Ramps + jumping (airborne = immune to obstacles)
+  if (bike.airT > 0) {
+    bike.airT -= dt;
+    if (bike.airT <= 0) {
+      bike.airT = 0; bike.h = 0;
+      burst(bike.x, game.dist, COLORS.sidewalk, 8, 70);
+    } else {
+      bike.h = Math.sin(Math.PI * (1 - bike.airT / CONFIG.jumpTime)) * CONFIG.jumpHeight;
+    }
+  }
+  for (const r of game.ramps) {
+    if (!r.used && bike.airT <= 0 && overlapsBike(r, 0.8)) {
+      r.used = true;
+      bike.airT = CONFIG.jumpTime;
+      popText('AIR!', bike.x, game.dist + 60, COLORS.perfect, 22);
+    }
+  }
+
+  // Papers in flight
+  for (const p of game.flying) updatePaper(p, dt);
+  game.flying = game.flying.filter((p) => !p.done);
+
+  // Obstacles
+  for (const o of game.obstacles) {
+    if (o.type === 'dog' || o.type === 'fan') {
+      if (!o.active && (o.z - game.dist) / game.speed < o.lead) o.active = true;
+      if (o.active) { o.x += o.dir * o.speed * dt; o.anim += dt * 16; }
+    } else if (o.type === 'skater') {
+      o.z += CONFIG.skaterSpeed * dt;
+      o.x = o.baseX + Math.sin(o.phase + game.time * CONFIG.skaterWeaveFreq) * CONFIG.skaterWeave;
+    } else if (o.type === 'jogger') {
+      o.z -= CONFIG.joggerSpeed * dt;
+      o.anim += dt * 8;
+      o.x = o.baseX + Math.sin(o.phase + game.time * 1.3) * 10;
+    } else if (o.type === 'streetcar') {
+      updateStreetcar(o, dt);
+    }
+    if (bike.airT <= 0 && bike.invuln <= 0 && overlapsBike(o, CONFIG.hitForgiveness)) { crash(o); return; }
+  }
+
+  if (isFirstDay() && !game.warnedObstacles && game.time >= CONFIG.graceTime) {
+    game.warnedObstacles = true;
+    popText('Watch the road!', view.W / 2, game.dist + 260, COLORS.perfect, 22);
+  }
+
+  updateSmoke(dt);
+
+  // Houses we've ridden past (a missed subscriber just means no points)
+  for (const h of game.houses) {
+    if (h.scenery || h.passed || h.z + h.len > game.dist) continue;
+    h.passed = true;
+    game.housesPassedToday++;
+    if (h.sub && !h.delivered) popText('MISSED', sideX(h.side, 80), h.mailZ, COLORS.neutral, 16);
+  }
+
+  // Day phases
+  if (game.phase === 'route' && game.dist > game.routeEndZ) finishRoute();
+  else if (game.phase === 'bonus' && game.dist > game.bonus.z1) finishBonus();
+  else if (game.phase === 'outro' && (game.phaseTimer -= dt) <= 0) { showDaySummary(); return; }
+
+  spawnAhead();
+  despawnBehind();
+}
+
+function updateStreetcar(o, dt) {
+  const tta = (o.z - game.dist) / Math.max(game.speed, 1);
+  if (!o.warned && tta < CONFIG.streetcarLead + CONFIG.streetcarWarn) {
+    o.warned = true;
+    popText('DING DING!', view.W / 2, game.dist + 260, COLORS.perfect, 24);
+  }
+  if (!o.active && tta < CONFIG.streetcarLead) {
+    o.active = true;
+    o.vx = (o.arriveX - o.x) / CONFIG.streetcarLead;
+  }
+  if (o.active) o.x += o.vx * dt;
+}
+
+// BBQ smoke: smokers/grills ahead sometimes puff a cloud that drifts across
+// the road (and up it, so it lingers on screen).
+function updateSmoke(dt) {
+  const th = theme();
+  if (th.smoke > 0 && game.smokes.length < CONFIG.smokeMax) {
+    for (const d of game.decor) {
+      if (d.type !== 'smoker' && d.type !== 'grill') continue;
+      const ahead = d.z - game.dist;
+      if (ahead > 120 && ahead < view.bikeY + 80 && Math.random() < th.smoke * dt) {
+        game.smokes.push({
+          x: d.x, z: d.z, vx: (d.x < view.W / 2 ? 1 : -1) * CONFIG.smokeDrift,
+          life: CONFIG.smokeLife, max: CONFIG.smokeLife, seed: (Math.random() * 1e6) | 0,
+        });
+        break;
+      }
+    }
+  }
+  for (const s of game.smokes) {
+    s.x += s.vx * dt;
+    s.z += game.speed * CONFIG.smokeFollow * dt;
+    s.life -= dt;
+  }
+  game.smokes = game.smokes.filter((s) => s.life > 0);
+}
+function finishRoute() {
+  const s = game.stats;
+  s.perfect = s.subs > 0 && s.deliveries === s.subs && s.subWindows === 0;
+  game.phase = 'bonus';
+  if (s.perfect) {
+    s.perfectBonus = s.routePoints * (CONFIG.perfectMultiplier - 1);
+    game.score += s.perfectBonus;
+    pushBanner('PERFECT DELIVERY!', `DAY POINTS x${CONFIG.perfectMultiplier}  +${s.perfectBonus}`, COLORS.perfect, CONFIG.bannerTime + 0.6);
+    celebrate();
+  }
+  pushBanner('BONUS COURSE!', 'HIT TARGETS · JUMP RAMPS', COLORS.good, CONFIG.bannerTime);
+}
+
+function finishBonus() {
+  game.stats.bonusClean = game.bonus.clean;
+  if (game.bonus.clean) {
+    addPoints(CONFIG.pointsBonusClear);
+    popText(`+${CONFIG.pointsBonusClear} COURSE CLEAR!`, view.W / 2, game.dist + 140, COLORS.perfect, 24);
+    celebrate();
+  }
+  game.phase = 'outro';
+  game.phaseTimer = CONFIG.outroTime;
+}
+
+function celebrate() {
+  game.flash = 0.4; game.flashColor = COLORS.perfect;
+  const confetti = [COLORS.perfect, COLORS.good, COLORS.bad, COLORS.glass, '#ffffff'];
+  for (let i = 0; i < 7; i++) {
+    burst(rand(40, view.W - 40), game.dist + rand(60, view.bikeY), pick(confetti), 14, 160);
+  }
+}
+
+function updateFx(dt) {
+  game.shake = Math.max(0, game.shake - CONFIG.shakeDecay * dt);
+  game.flash = Math.max(0, game.flash - dt);
+  for (const p of game.particles) {
+    p.x += p.vx * dt; p.z += p.vz * dt;
+    p.vx *= 0.92; p.vz *= 0.92;
+    p.vh -= 520 * dt;
+    p.h = Math.max(0, p.h + p.vh * dt);
+    p.life -= dt;
+  }
+  game.particles = game.particles.filter((p) => p.life > 0);
+  for (const p of game.pops) { p.y -= 38 * dt; p.life -= dt; }
+  game.pops = game.pops.filter((p) => p.life > 0);
+}
+
+// Houses are kept all day (only 20); everything else is dropped once behind.
+function despawnBehind() {
+  const limit = game.dist - (view.H - view.bikeY) - 120;
+  game.decor = game.decor.filter((d) => d.z > limit);
+  game.obstacles = game.obstacles.filter((o) => o.z + o.h > limit && (o.type === 'streetcar' || (o.x > -60 && o.x < view.W + 60)));
+  game.groundPapers = game.groundPapers.filter((p) => p.z > limit);
+  game.ramps = game.ramps.filter((r) => r.z + r.h > limit);
+  game.targets = game.targets.filter((t) => t.z > limit);
+}
+
+function overlapsBike(o, forgiveness) {
+  return Math.abs(o.x - bike.x) < (o.w / 2 + CONFIG.bikeHalfW) * forgiveness &&
+         Math.abs(o.z - game.dist) < (o.h / 2 + CONFIG.bikeHalfL) * forgiveness;
+}
+
+// --- Throwing ---
+// A paper travels in left-side coordinates (lx shrinks as it flies outward).
+function throwPaper(side) {
+  if (game.state !== 'playing' || game.throwCooldown > 0) return;
+  game.throwCooldown = CONFIG.throwCooldown;
+  const x = bike.x + side * 8;
+  game.flying.push({
+    side, lx: side < 0 ? x : view.W - x, z: game.dist, vz: game.speed * CONFIG.paperCarry,
+    h: CONFIG.throwHeight + bike.h, rot: 0, spin: side * rand(14, 20), done: false,
+  });
+}
+
+function updatePaper(p, dt) {
+  const prev = p.lx;
+  p.lx -= CONFIG.throwSpeed * dt;
+  p.z += p.vz * dt;
+  p.rot += p.spin * dt;
+  if (p.h > CONFIG.throwHeight) p.h = Math.max(CONFIG.throwHeight, p.h - 80 * dt);   // thrown mid-jump
+  const hit = paperHit(p, prev);
+  if (hit) {
+    applyPaperHit(p, hit);
+    p.done = true;
+  } else if (p.lx < CONFIG.paperMinLx) {
+    dropPaper(p, p.lx);
+    burst(sideX(p.side, p.lx), p.z, '#d9d3c3', 5, 50);
+    p.done = true;
+  }
+}
+
+// First thing the paper reaches this frame (largest contact lx in [p.lx, prev]).
+function paperHit(p, prev) {
+  let hit = null;
+  const consider = (contact, info) => {
+    if (contact <= prev && contact >= p.lx && (!hit || contact > hit.contact)) hit = { contact, ...info };
+  };
+  for (const t of game.targets) {
+    if (t.side === p.side && !t.hit && Math.abs(p.z - t.z) <= CONFIG.targetHalf) consider(t.lx + 4, { type: 'target', t });
+  }
+  for (const h of game.houses) {
+    if (h.side !== p.side || p.z < h.z - 30 || p.z > h.z + h.len + 30) continue;
+    if (h.scenery) {   // bonus-course buildings just stop the paper
+      if (p.z >= h.z && p.z <= h.z + h.len) consider(L.wallX, { type: 'thud', h });
+      continue;
+    }
+    for (const pr of h.props) {
+      if (!pr.knocked && Math.abs(p.z - pr.z) <= pr.hz + 3) consider(pr.lx + pr.hw, { type: 'prop', h, pr });
+    }
+    if (Math.abs(p.z - h.mailZ) <= CONFIG.mailboxHalf) consider(L.mailboxX + 4, { type: 'mailbox', h });
+    if (p.z >= h.z && p.z <= h.z + h.len) {
+      const zn = hitZones(h);
+      if (p.z >= zn.porch[0] && p.z <= zn.porch[1]) consider(L.stepsX, { type: 'porch', h });   // door/porch wins
+      else consider(L.wallX, { type: 'wall', h });
+    }
+  }
+  return hit;
+}
+
+function applyPaperHit(p, hit) {
+  const x = sideX(p.side, hit.contact), z = p.z, h = hit.h, s = game.stats;
+  switch (hit.type) {
+    case 'target':
+      hit.t.hit = true;
+      s.targets++;
+      addPoints(CONFIG.pointsBonusTarget);
+      popText(`+${CONFIG.pointsBonusTarget}`, x, z, COLORS.perfect, 24);
+      burst(x, z, { fountain: COLORS.waterLight, smoker: COLORS.smoke, newsstand: COLORS.paper }[hit.t.kind] || COLORS.bad, 12, 130);
+      burst(x, z, '#ffffff', 8, 110);
+      dropPaper(p, hit.contact + 6);
+      break;
+
+    case 'thud':
+      burst(x, z, '#d9d3c3', 5, 50);
+      dropPaper(p, L.wallX + 8);
+      break;
+
+    case 'prop':
+      hit.pr.knocked = true;
+      burst(x, z, hit.pr.type === 'trash' ? pick(COLORS.garbage) : COLORS.fence, 10, 120);
+      if (!h.sub) {
+        s.props++;
+        addPoints(CONFIG.pointsProp);
+        popText(`+${CONFIG.pointsProp} BAM!`, x, z, COLORS.good, 22);
+      } else {
+        popText('OOPS', x, z, COLORS.neutral, 16);
+      }
+      dropPaper(p, hit.contact + 4);
+      break;
+
+    case 'mailbox':
+      if (canDeliver(h)) {
+        deliver(h);
+        s.mailbox++;
+        addPoints(CONFIG.pointsMailbox);
+        popText(`+${CONFIG.pointsMailbox} MAILBOX!`, x, z, COLORS.perfect, 26);
+        burst(x, z, COLORS.perfect, CONFIG.particleCount + 6, 150);
+        game.shake = Math.max(game.shake, CONFIG.shakeMailbox);
+        return;   // it's in the mailbox, nothing left on the lawn
+      }
+      popText('THUNK', x, z, COLORS.neutral, 14);
+      dropPaper(p, hit.contact + 4);
+      break;
+
+    case 'porch':
+      if (canDeliver(h)) {
+        deliver(h);
+        addPoints(CONFIG.pointsPorch);
+        popText(`+${CONFIG.pointsPorch} DELIVERED`, x, z, COLORS.good, 24);
+        burst(x, z, COLORS.good, CONFIG.particleCount, 110);
+      }
+      dropPaper(p, L.porchX1 - 6);
+      break;
+
+    case 'wall': {
+      const idx = hitZones(h).windows.findIndex(([lo, hi]) => z >= lo && z <= hi);
+      if (idx >= 0 && !h.windows[idx]) {
+        h.windows[idx] = true;
+        s.windows++;
+        burst(x, z, COLORS.glass, CONFIG.particleCount + 6, 170);
+        burst(x, z, '#ffffff', 6, 140);
+        game.shake = Math.max(game.shake, CONFIG.shakeWindow);
+        if (h.sub) {   // no points, and no Perfect Day today
+          s.subWindows++;
+          popText('OOPS! SUBSCRIBER', x, z, COLORS.bad, 20);
+          game.flash = 0.3; game.flashColor = COLORS.bad;
+        } else {
+          addPoints(CONFIG.pointsVandalWindow);
+          popText(`+${CONFIG.pointsVandalWindow} CRASH!`, x, z, COLORS.glass, 22);
+        }
+      }
+      dropPaper(p, L.wallX + 8);
+      break;
+    }
+  }
+}
+
+// Where a house's delivery targets are, along the street (z). Used by hit
+// detection, window drawing and the H debug overlay so they always agree.
+function hitZones(h) {
+  const cz = h.z + h.len / 2;
+  const porch = CONFIG.porchHitHalf + CONFIG.paperHalf;   // door/porch zone (paper touching it counts)
+  const winNear = porch + CONFIG.windowGap, winFar = h.len / 2 - 6;
+  return {
+    cz,
+    porch: [cz - porch, cz + porch],
+    mailbox: [h.mailZ - CONFIG.mailboxHalf, h.mailZ + CONFIG.mailboxHalf],
+    windows: winFar > winNear ? [[cz - winFar, cz - winNear], [cz + winNear, cz + winFar]] : [],
+  };
+}
+
+function canDeliver(h) { return h.sub && !h.delivered; }
+function deliver(h) { h.delivered = true; game.stats.deliveries++; game.totalDelivered++; }
+function dropPaper(p, lx) { game.groundPapers.push({ x: sideX(p.side, lx), z: p.z, rot: p.rot }); }
+
+function addPoints(n) {
+  game.score += n;
+  if (game.phase === 'route') game.stats.routePoints += n;
+  else game.stats.bonusPoints += n;
+}
+
+// --- Effects ---
+function burst(x, z, color, n, speed) {
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, Math.PI * 2), s = rand(0.3, 1) * speed;
+    const life = rand(0.35, 0.7);
+    game.particles.push({
+      x, z, h: 4, vx: Math.cos(a) * s, vz: Math.sin(a) * s, vh: rand(60, 170),
+      life, max: life, color, size: rand(2, 4.5),
+    });
+  }
+}
+
+// Pop text lives in screen space so it stays readable while the world scrolls.
+function popText(text, x, z, color, size) {
+  game.pops.push({ text, x: clamp(x, 110, view.W - 110), y: sy(z), color, size, life: CONFIG.popLife, max: CONFIG.popLife });
+}
+
+
+// ---------------------------------------------------------------------
+// 8. RENDER
+// The world is drawn into a small offscreen pixel buffer (1 buffer pixel =
+// 1 art pixel = CONFIG.pixelSize logical units), then scaled up with no
+// smoothing so it stays crisp on any screen. HUD text is drawn on top at
+// full resolution.
+//
+// Fake 3D: the ground is top-down. Anything with height h is projected up
+// the screen (h * heightY) and leans away from the centre line
+// (h * perspX), like a camera floating above the middle of the street.
+// proj(x, z, h) does that. Walls, roofs and boxes are flat polygons filled
+// one pixel row at a time (fillPoly), so every edge is a hard pixel edge.
+//
+// Sprites are tiny ASCII pixel-art grids (SPRITE_ART) baked to canvases at
+// startup. To use real art later, put a loaded Image in SPR under the same
+// name (1 image pixel = 1 art pixel); drawSprite() doesn't care.
+// ---------------------------------------------------------------------
+const FONT = '"Press Start 2P", ui-monospace, Menlo, monospace';
+
+const PAL = {
+  k: '#1a1c2c',                 // outline
+  w: '#2b2b35',                 // tires
+  g: '#a7b0ba',                 // handlebar
+  s: '#f2c8a0',                 // skin
+  c: '#2d3a4a',                 // cap
+  o: '#ff8c42', O: '#d0662a',   // shirt
+  y: '#d8b06a', Y: '#a37e44',   // paper bag
+  n: '#34495e',                 // shorts / jeans
+  d: '#b0713f', D: '#7a4a28',   // dog
+  h: '#6b4226',                 // hair
+  p: '#9b5de5', P: '#6f3fb0',   // skater shirt
+  m: '#f15bb5',                 // skateboard
+  e: '#f7f4ea', E: '#d9d1bd', r: '#d64545',   // newspaper
+  a: '#ffd23f',                 // gold
+  f: '#ff7eb6', F: '#d9548f',   // flamingo
+  b: '#3a7bd5',                 // gnome coat
+  t: '#2ec4b6',                 // jogger top
+};
+
+const RIDER_TOP = [
+  '.....kk.....',
+  '.....ww.....',
+  '.kgggwwgggk.',
+  '.ss..ww..ss.',
+  '..s.kkkk.s..',
+  '..skccccks..',
+  '..okccccko..',
+  '.oooOssOooo.',
+  '.yooooooooy.',
+  'yyOooooooOyy',
+  'yyOooooooOyy',
+  'yYOOooooOOYy',
+  '.Y.OOooOO.Y.',
+  '....knnk....',
+  '...nnkknn...',
+];
+const RIDER_BOTTOM = ['....kwwk....', '....kwwk....', '.....kk.....'];
+
+const SPRITE_ART = {
+  riderA: [...RIDER_TOP, '...s.ww.....', '...k.ww.s...', '.....ww.k...', ...RIDER_BOTTOM],
+  riderB: [...RIDER_TOP, '.....ww.s...', '...s.ww.k...', '...k.ww.....', ...RIDER_BOTTOM],
+  dogA: [
+    '.........dk...',
+    'k........ddkd.',
+    '.k.ddddddddddk',
+    '..ddddddddddd.',
+    '..dDDDDDDDd...',
+    '..D.D....D.D..',
+    '..D.D....D.D..',
+  ],
+  dogB: [
+    '.........dk...',
+    '.k.......ddkd.',
+    'k..ddddddddddk',
+    '..ddddddddddd.',
+    '..dDDDDDDDd...',
+    '.D...D..D...D.',
+    'D.....DD.....D',
+  ],
+  skater: [
+    '....kkk....',
+    '...khhhk...',
+    '....hhh....',
+    'sspppppppss',
+    's..ppppp..s',
+    '...ppppp...',
+    '...PPPPP...',
+    '...nn.nn...',
+    '...nn.nn...',
+    '...kk.kk...',
+    '..mmmmmmm..',
+    '..wmmmmmw..',
+  ],
+  paper: [
+    '.kkkkk.',
+    'keereek',
+    '.kkkkk.',
+  ],
+  arrow: [
+    'kkkkkkk',
+    'kaaaaak',
+    '.kaaak.',
+    '..kak..',
+    '...k...',
+  ],
+  bang: ['kkk', 'kak', 'kak', 'kak', 'kkk', 'kak', 'kkk'],
+  flamingo: [
+    '...ff.',
+    '...fkk',
+    '...f..',
+    '...f..',
+    '..f...',
+    '.ffff.',
+    'fffFF.',
+    '.fFF..',
+    '..k...',
+    '..k...',
+    '..k...',
+    '.kk...',
+  ],
+  gnome: [
+    '..r..',
+    '.rrr.',
+    '.rrr.',
+    'rrrrr',
+    '.sks.',
+    'eeeee',
+    '.eee.',
+    'bbebb',
+    '.k.k.',
+  ],
+  cone: [
+    '...k...',
+    '..kok..',
+    '..kek..',
+    '.koook.',
+    '.keeek.',
+    'koooook',
+    'kkkkkkk',
+  ],
+  joggerA: [
+    '...hhh...',
+    '..hsssh..',
+    '...sss...',
+    '..ttttt..',
+    '.sttttts.',
+    's.ttttt.s',
+    '...ttt...',
+    '...nnn...',
+    '..nn.nn..',
+    '..s...s..',
+    '..s...s..',
+    '..e...e..',
+  ],
+  joggerB: [
+    '...hhh...',
+    '..hsssh..',
+    '...sss...',
+    '..ttttt..',
+    '.sttttts.',
+    '.sttttts.',
+    '...ttt...',
+    '...nnn...',
+    '...n.n...',
+    '...s.s...',
+    '..s...s..',
+    '.e.....e.',
+  ],
+  fanA: [
+    '....aaa...',
+    '...aaaaa..',
+    '....sss...',
+    '....ssk...',
+    '...rrrr...',
+    '..srrrrs..',
+    '.s.rrrr.s.',
+    '...rrrr...',
+    '...nnnn...',
+    '..nn..nn..',
+    '.nn....nn.',
+    'kk......kk',
+  ],
+  fanB: [
+    '....aaa...',
+    '...aaaaa..',
+    '....sss...',
+    '....ssk...',
+    '...rrrr...',
+    '..srrrrs..',
+    '..srrrrs..',
+    '...rrrr...',
+    '...nnnn...',
+    '...nnn....',
+    '...n.nn...',
+    '..kk..kk..',
+  ],
+  crowd: [
+    '.hhh.',
+    '.sss.',
+    '.rrr.',
+    'srrrs',
+    '.rrr.',
+    '.n.n.',
+    '.n.n.',
+    '.k.k.',
+  ],
+  marker: [
+    '..kkkkkkk..',
+    '.kaaaaaaak.',
+    'kaaaaaaaaak',
+    'kaakkkkkaak',
+    'kaakerekaak',
+    'kaakkkkkaak',
+    'kaaaaaaaaak',
+    '.kaaaaaaak.',
+    '..kkaaakk..',
+    '....kak....',
+    '.....k.....',
+  ],
+  heart: [
+    '.kk.kk.',
+    'krrkrrk',
+    'krrrrrk',
+    '.krrrk.',
+    '..krk..',
+    '...k...',
+  ],
+};
+
+function makeCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return c;
+}
+function spriteFromFn(w, h, fn) {
+  const c = makeCanvas(w, h), g = c.getContext('2d');
+  fn((x, y, col) => { g.fillStyle = col; g.fillRect(x, y, 1, 1); });
+  return c;
+}
+function spriteFromArt(rows, pal = PAL) {
+  const w = Math.max(...rows.map((r) => r.length));
+  return spriteFromFn(w, rows.length, (px) => {
+    rows.forEach((row, y) => { for (let x = 0; x < row.length; x++) if (pal[row[x]]) px(x, y, pal[row[x]]); });
+  });
+}
+function flipped(src) {
+  const c = makeCanvas(src.width, src.height), g = c.getContext('2d');
+  g.translate(src.width, 0); g.scale(-1, 1); g.drawImage(src, 0, 0);
+  return c;
+}
+// Round blob shapes (trees, bushes) with an outline and top-left light.
+function makeBlob(w, h, blobs, colors, trunk) {
+  const inside = (x, y) => blobs.some(([cx, cy, r]) => (x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2 <= r * r);
+  return spriteFromFn(w, h, (px) => {
+    if (trunk) {
+      for (let y = trunk.y0; y < h; y++) for (let x = trunk.x0; x < trunk.x1; x++) {
+        px(x, y, x === trunk.x0 || x === trunk.x1 - 1 ? '#4a2f1d' : '#6e4a2e');
+      }
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      if (!inside(x, y)) continue;
+      const edge = !inside(x - 1, y) || !inside(x + 1, y) || !inside(x, y - 1) || !inside(x, y + 1);
+      const light = -(x - w / 2) * 0.5 - (y - h * 0.35) * 0.6;
+      let col = colors.mid;
+      if (light > 3) col = (x + y) % 2 ? colors.hi : colors.mid;
+      if (light > 5) col = colors.hi;
+      else if (light < -4) col = colors.lo;
+      px(x, y, edge ? colors.edge : col);
+    }
+  });
+}
+function makePothole() {
+  return spriteFromFn(16, 11, (px) => {
+    for (let y = 0; y < 11; y++) for (let x = 0; x < 16; x++) {
+      const d = ((x + 0.5 - 8) / 8) ** 2 + ((y + 0.5 - 5.5) / 5.5) ** 2;
+      if (d > 1) continue;
+      if (d > 0.6) px(x, y, y > 5 ? '#7a7d84' : '#55585f');
+      else px(x, y, y < 5 ? '#141519' : '#25272d');
+    }
+  });
+}
+// Bullseye on a post (bonus course).
+function makeTarget() {
+  return spriteFromFn(13, 20, (px) => {
+    for (let y = 12; y < 20; y++) { px(5, y, '#4a2f1d'); px(6, y, '#6e4a2e'); px(7, y, '#4a2f1d'); }
+    for (let y = 0; y < 13; y++) for (let x = 0; x < 13; x++) {
+      const d = Math.hypot(x + 0.5 - 6.5, y + 0.5 - 6.5);
+      if (d > 6.5) continue;
+      px(x, y, d > 5.6 ? PAL.k : d > 4.2 ? PAL.r : d > 2.8 ? '#ffffff' : d > 1.4 ? PAL.r : '#ffffff');
+    }
+  });
+}
+function makeShadow(w, h) {
+  return spriteFromFn(w, h, (px) => {
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      if (((x + 0.5 - w / 2) / (w / 2)) ** 2 + ((y + 0.5 - h / 2) / (h / 2)) ** 2 <= 1) px(x, y, 'rgba(0,0,0,0.28)');
+    }
+  });
+}
+
+const SPR = {};
+for (const k in SPRITE_ART) SPR[k] = spriteFromArt(SPRITE_ART[k]);
+SPR.dogA_L = flipped(SPR.dogA);
+SPR.dogB_L = flipped(SPR.dogB);
+const LEAVES = { hi: '#6cbf4f', mid: '#4a9a3e', lo: '#2f6b2e', edge: '#1f4a22' };
+// Big leafy oaks / maples, one sprite per canopy color (THEMES[].trees picks).
+const LEAF_PALETTES = {
+  green: LEAVES,
+  orange: { hi: '#f2a24a', mid: '#e07a2e', lo: '#a8501f', edge: '#5e2c12' },
+  red: { hi: '#e8664a', mid: '#c9452f', lo: '#8a2a1f', edge: '#4a1510' },
+  gold: { hi: '#f5d76a', mid: '#e8b33a', lo: '#b07d22', edge: '#5e4212' },
+};
+const OAK_BLOBS = [[14, 11, 10], [7, 15, 7], [21, 15, 7], [10, 21, 7], [18, 21, 7]];
+for (const k in LEAF_PALETTES) SPR['tree_' + k] = makeBlob(28, 38, OAK_BLOBS, LEAF_PALETTES[k], { x0: 12, x1: 16, y0: 25 });
+SPR.fanA_L = flipped(SPR.fanA);
+SPR.fanB_L = flipped(SPR.fanB);
+SPR.crowdR = spriteFromArt(SPRITE_ART.crowd, { ...PAL, r: COLORS.flagRed });
+SPR.crowdG = spriteFromArt(SPRITE_ART.crowd, { ...PAL, r: COLORS.flagGold, h: '#2b2b35' });
+SPR.bush = makeBlob(14, 9, [[4, 5, 4], [9, 4, 5], [11, 6, 3]], LEAVES);
+SPR.pothole = makePothole();
+SPR.target = makeTarget();
+SPR.marker = (() => {   // the subscriber marker, drawn at double size so it reads from far away
+  const src = spriteFromArt(SPRITE_ART.marker), c = makeCanvas(src.width * 2, src.height * 2), g = c.getContext('2d');
+  g.imageSmoothingEnabled = false;
+  g.drawImage(src, 0, 0, c.width, c.height);
+  return c;
+})();
+SPR.ring = spriteFromFn(9, 9, (px) => {
+  for (let y = 0; y < 9; y++) for (let x = 0; x < 9; x++) {
+    const d = Math.hypot(x + 0.5 - 4.5, y + 0.5 - 4.5);
+    if (d <= 4.5) px(x, y, d > 3.7 ? PAL.k : d > 2.6 ? PAL.r : d > 1.5 ? '#ffffff' : PAL.r);
+  }
+});
+SPR.shadowS = makeShadow(6, 2);
+SPR.shadowM = makeShadow(14, 4);
+SPR.shadowBike = makeShadow(10, 16);
+SPR.shadowTree = makeShadow(24, 7);
+
+// --- Buffer helpers (all positions in logical units) ---
+function bx(x) { return x / CONFIG.pixelSize + PAD; }
+function by(y) { return y / CONFIG.pixelSize + PAD; }
+
+// World point -> logical screen point [x, y].
+function proj(x, z, h) {
+  return [x + (x - view.W / 2) * h * CONFIG.perspX, sy(z) - h * CONFIG.heightY];
+}
+
+const shadeCache = new Map();
+// f < 1 darkens, f > 1 lightens toward white.
+function shade(hex, f) {
+  const key = hex + f;
+  let c = shadeCache.get(key);
+  if (!c) {
+    const n = parseInt(hex.slice(1), 16);
+    const ch = (v) => Math.round(clamp(f <= 1 ? v * f : v + (255 - v) * (f - 1), 0, 255));
+    c = `rgb(${ch(n >> 16)},${ch((n >> 8) & 255)},${ch(n & 255)})`;
+    shadeCache.set(key, c);
+  }
+  return c;
+}
+
+function hash(a, b) {
+  let h = Math.imul(a, 374761393) ^ Math.imul(b + 1, 668265263);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+function rectL(x, y, w, h, color) {
+  const x0 = Math.round(bx(x)), y0 = Math.round(by(y));
+  pix.fillStyle = color;
+  pix.fillRect(x0, y0, Math.max(1, Math.round(bx(x + w)) - x0), Math.max(1, Math.round(by(y + h)) - y0));
+}
+
+// Scanline fill of a convex polygon given as logical [x, y] points.
+function fillPoly(pts, color) {
+  const n = pts.length, xs = [], ys = [];
+  let minY = Infinity, maxY = -Infinity;
+  for (const p of pts) {
+    const x = bx(p[0]), y = by(p[1]);
+    xs.push(x); ys.push(y);
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  const y0 = Math.max(0, Math.round(minY)), y1 = Math.min(buf.height, Math.round(maxY));
+  if (y0 >= y1) return;
+  pix.fillStyle = color;
+  for (let y = y0; y < y1; y++) {
+    const yc = y + 0.5;
+    let l = Infinity, r = -Infinity;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const ya = ys[j], yb = ys[i];
+      if ((ya <= yc && yb > yc) || (yb <= yc && ya > yc)) {
+        const x = xs[j] + (yc - ya) / (yb - ya) * (xs[i] - xs[j]);
+        if (x < l) l = x;
+        if (x > r) r = x;
+      }
+    }
+    const a = Math.round(l), c = Math.round(r);
+    if (c > a) pix.fillRect(a, y, c - a, 1);
+  }
+}
+function poly3(pts, color) { fillPoly(pts.map((p) => proj(p[0], p[1], p[2])), color); }
+
+// 1-pixel line between logical screen points.
+function lineL(a, c, color) {
+  let x0 = Math.round(bx(a[0])), y0 = Math.round(by(a[1]));
+  const x1 = Math.round(bx(c[0])), y1 = Math.round(by(c[1]));
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0);
+  const stepX = x0 < x1 ? 1 : -1, stepY = y0 < y1 ? 1 : -1;
+  let err = dx + dy;
+  pix.fillStyle = color;
+  for (let i = 0; i < 2000; i++) {
+    pix.fillRect(x0, y0, 1, 1);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += stepX; }
+    if (e2 <= dx) { err += dx; y0 += stepY; }
+  }
+}
+function line3(a, c, color) { lineL(proj(a[0], a[1], a[2]), proj(c[0], c[1], c[2]), color); }
+
+// Axis-aligned 3D box: draws the faces the camera can see.
+function box3(x0, x1, z0, z1, h0, h1, color, topColor) {
+  if (x0 > x1) [x0, x1] = [x1, x0];
+  const cx = view.W / 2;
+  if (x1 < cx) poly3([[x1, z0, h0], [x1, z1, h0], [x1, z1, h1], [x1, z0, h1]], shade(color, 0.8));
+  else if (x0 > cx) poly3([[x0, z0, h0], [x0, z1, h0], [x0, z1, h1], [x0, z0, h1]], shade(color, 0.8));
+  poly3([[x0, z0, h0], [x1, z0, h0], [x1, z0, h1], [x0, z0, h1]], shade(color, 0.65));
+  poly3([[x0, z0, h1], [x1, z0, h1], [x1, z1, h1], [x0, z1, h1]], topColor || shade(color, 1.12));
+}
+
+function ellipsePts(x, z, rx, rz, n) {
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    pts.push([x + Math.cos(a) * rx, sy(z) + Math.sin(a) * rz]);
+  }
+  return pts;
+}
+// Dotted ground ellipse in the current fillStyle / globalAlpha.
+function ringPixels(x, z, rx, rz) {
+  for (const [px, py] of ellipsePts(x, z, rx, rz, 22)) pix.fillRect(Math.round(bx(px)), Math.round(by(py)), 1, 1);
+}
+
+// Sprite with its bottom-centre on logical point (x, y), optionally rotated.
+function drawSprite(img, x, y, rot) {
+  const px = Math.round(bx(x)), py = Math.round(by(y));
+  if (!rot) { pix.drawImage(img, px - (img.width >> 1), py - img.height); return; }
+  pix.save();
+  pix.translate(px, py - img.height / 2);
+  pix.rotate(rot);
+  pix.drawImage(img, -(img.width >> 1), -(img.height >> 1));
+  pix.restore();
+}
+function drawSpriteC(img, x, y, rot) { drawSprite(img, x, y + img.height * CONFIG.pixelSize / 2, rot); }
+
+
+function render(now) {
+  const t = now / 1000, ps = CONFIG.pixelSize;
+  view.camZ = Math.round(game.dist / ps) * ps;   // snap the camera so static things don't shimmer
+
+  // --- World into the pixel buffer ---
+  drawGround();
+  for (const o of game.obstacles) if (o.type === 'pothole') drawSpriteC(SPR.pothole, o.x, sy(o.z));
+  for (const p of game.groundPapers) drawSpriteC(SPR.paper, p.x, sy(p.z), p.rot);
+
+  // Painter's order: far things first so near things overlap them.
+  const items = [];
+  for (const h of game.houses) items.push([h.z, drawHouse, h]);
+  for (const d of game.decor) items.push([d.z, drawDecor, d]);
+  for (const o of game.obstacles) if (o.type !== 'pothole') items.push([o.z - o.h / 2, drawObstacle, o]);
+  for (const r of game.ramps) items.push([r.z - r.h / 2, drawRamp, r]);
+  for (const tg of game.targets) items.push([tg.z, drawTarget, tg]);
+  for (const tr of game.tracks) items.push([tr.z - 12, drawCrossing, tr]);
+  items.push([game.dist - CONFIG.bikeHalfL, drawBike, null]);
+  items.sort((a, c) => c[0] - a[0]);
+  for (const [, fn, o] of items) fn(o, t);
+
+  drawLights(t);
+  for (const p of game.flying) drawFlyingPaper(p);
+  drawSmoke();
+  drawSubMarkers(t);
+  drawParticles();
+  if (theme().skyline) drawSkyline();
+  if (debug.hitAreas) drawHitAreas();
+
+  // --- Scale the buffer up to the screen ---
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const s = view.scale * view.dpr;
+  ctx.setTransform(s, 0, 0, s, view.offX * view.dpr, view.offY * view.dpr);
+  ctx.imageSmoothingEnabled = false;
+  let shx = 0, shy = 0;
+  if (game.shake > 0) {
+    shx = clamp(Math.round(rand(-1, 1) * game.shake / ps), -PAD, PAD);
+    shy = clamp(Math.round(rand(-1, 1) * game.shake / ps), -PAD, PAD);
+  }
+  ctx.drawImage(buf, PAD + shx, PAD + shy, view.W / ps, view.H / ps, 0, 0, view.W, view.H);
+
+  // --- Crisp overlays ---
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, 0, view.W, view.H); ctx.clip();
+  drawPops();
+  drawFlash();
+  if (game.state !== 'title') drawHUD();
+  drawHint(t);
+  if (game.state === 'playing' || game.state === 'crashed') drawBanner();
+  ctx.restore();
+}
+
+// Calls fn(y, k) for each line of a world-anchored repeating pattern.
+function forEachWorldLine(period, fn) {
+  const m = PAD * CONFIG.pixelSize + period;
+  const zMin = view.camZ - (view.H - view.bikeY) - m;
+  const zMax = view.camZ + view.bikeY + m;
+  for (let k = Math.floor(zMin / period); k <= Math.ceil(zMax / period); k++) fn(sy(k * period), k);
+}
+
+function drawGround() {
+  const G = theme().ground, th = theme();
+  const ps = CONFIG.pixelSize, ext = PAD * ps;
+  const top = -ext, tall = view.H + ext * 2;
+  pix.fillStyle = G.grass;
+  pix.fillRect(0, 0, buf.width, buf.height);
+
+  // Mowed lawn stripes, grass tufts, fallen leaves
+  forEachWorldLine(80, (y) => {
+    rectL(-ext, y - 40, L.sidewalkX0 + ext, 40, G.grassStripe);
+    rectL(sideX(1, L.sidewalkX0), y - 40, L.sidewalkX0 + ext, 40, G.grassStripe);
+  });
+  forEachWorldLine(12, (y, k) => {
+    for (const side of [-1, 1]) {
+      for (let i = 0; i < 2; i++) {
+        const x = sideX(side, -ext + hash(k * side, i) * (L.sidewalkX0 + ext - ps * 2));
+        rectL(x, y, ps, ps, G.grassLight);
+        rectL(x + ps, y + ps, ps, ps, G.grassDark);
+      }
+      for (let i = 0; i < 4; i++) {
+        if (hash(k * side + 99, i) >= th.leaves) continue;
+        const x = sideX(side, -ext + hash(k * side, i + 20) * (L.sidewalkX0 + ext - ps * 2));
+        const c = th.leafColors[(hash(k, i + 50) * th.leafColors.length) | 0];
+        rectL(x, y + 4, ps, ps, c);
+        if (hash(k, i + 70) < 0.5) rectL(x + ps, y + 4, ps, ps, c);
+      }
+    }
+  });
+
+  // Sidewalks
+  const sw = L.sidewalkX1 - L.sidewalkX0;
+  for (const side of [-1, 1]) {
+    const x0 = side < 0 ? L.sidewalkX0 : sideX(1, L.sidewalkX1);
+    rectL(x0, top, sw, tall, G.sidewalk);
+    forEachWorldLine(32, (y) => rectL(x0, y, sw, ps, G.sidewalkJoint));
+  }
+
+  // Driveways across the side yards, down to the curb
+  for (const d of game.driveways) {
+    const ya = sy(d.z1), yb = sy(d.z0);
+    if (yb < -10 || ya > view.H + 10) continue;
+    const xa = d.side < 0 ? 20 : view.W - L.streetX0;
+    rectL(xa, ya, L.streetX0 - 20, yb - ya, '#c9c4b8');
+    rectL(xa, ya, L.streetX0 - 20, ps, '#b1ab9d');
+  }
+
+  // Street, speckles, curbs, centre dashes
+  const stW = L.streetX1 - L.streetX0;
+  rectL(L.streetX0, top, stW, tall, G.street);
+  forEachWorldLine(8, (y, k) => {
+    for (let i = 0; i < 2; i++) {
+      rectL(L.streetX0 + 4 + hash(k, i + 7) * (stW - 8), y, ps, ps, i ? G.streetLight : G.streetDark);
+    }
+  });
+  rectL(L.streetX0 - ps, top, ps, tall, G.curb);
+  rectL(L.streetX0, top, ps, tall, G.streetDark);
+  rectL(L.streetX1, top, ps, tall, G.curb);
+  rectL(L.streetX1 - ps, top, ps, tall, G.streetDark);
+  forEachWorldLine(64, (y) => rectL(view.W / 2 - ps, y - 32, ps * 2, 28, G.laneLine));
+
+  // Streetcar tracks across the whole road
+  for (const tr of game.tracks) {
+    const y = sy(tr.z);
+    if (y < -20 || y > view.H + 20) continue;
+    for (let x = -ext; x < view.W + ext; x += 10) rectL(x, y - 9, 4, 18, COLORS.tie);
+    rectL(-ext, y - 6, view.W + ext * 2, ps, COLORS.rail);
+    rectL(-ext, y + 4, view.W + ext * 2, ps, COLORS.rail);
+  }
+
+  // Bonus course start / finish lines (checkered)
+  for (const ln of game.lines) {
+    const y = sy(ln.z);
+    if (y < -20 || y > view.H + 20) continue;
+    for (let i = 0; i < stW / 10; i++) {
+      for (let j = 0; j < 2; j++) rectL(L.streetX0 + i * 10, y - j * 8, 10, 8, (i + j) % 2 ? '#ffffff' : PAL.k);
+    }
+  }
+}
+
+// Houses are described in left-side coordinates; X() mirrors them.
+function drawHouse(h, t) {
+  const st = HOUSE_STYLES[h.style];
+  const z0 = h.z, z1 = h.z + h.len, WH = h.wallH;
+  const rh = WH + (st.roof === 'flat' ? 0 : st.roofH);
+  if (sy(z0) < -20 || sy(z1) - (rh + 40) * CONFIG.heightY > view.H + 20) return;
+  const X = (x) => sideX(h.side, x);
+  const q = (pts, col) => poly3(pts.map(([x, z, hh]) => [X(x), z, hh]), col);
+  const g = {
+    h, st, t, z0, z1, WH, rh, cz: z0 + h.len / 2, X, q,
+    l3: (a, c, col) => line3([X(a[0]), a[1], a[2]], [X(c[0]), c[1], c[2]], col),
+    quadX: (x, za, zb, ha, hb, col) => q([[x, za, ha], [x, zb, ha], [x, zb, hb], [x, za, hb]], col),   // street-facing plane
+    quadZ: (z, xa, xb, ha, hb, col) => q([[xa, z, ha], [xb, z, ha], [xb, z, hb], [xa, z, hb]], col),   // camera-facing plane
+    box: (xa, xb, za, zb, ha, hb, col, top) => box3(X(xa), X(xb), za, zb, ha, hb, col, top),
+  };
+  houseGround(g);
+  houseWalls(g);
+  houseOpenings(g);
+  if (st.roof === 'flat') flatRoof(g); else gableRoof(g);
+  housePorch(g);
+  if (h.flags) houseFlags(g);
+  for (const p of h.props) drawProp(h, p);
+  if (!h.scenery) drawMailbox(h, t);
+}
+
+function houseGround(g) {
+  const { h, st, q, z0, z1, cz } = g;
+  const G = theme().ground, hx0 = L.houseX0, wx = L.wallX;
+  q([[hx0, z0 - 8, 0], [wx + 6, z0 - 8, 0], [wx + 6, z1 - 8, 0], [hx0, z1 - 8, 0]], COLORS.shadow);
+  if (st.paved) {   // city lots: paved forecourt (the doorstep target is unchanged)
+    q([[wx, z0, 0], [L.sidewalkX0, z0, 0], [L.sidewalkX0, z1, 0], [wx, z1, 0]], shade(G.sidewalk, 0.95));
+    for (let zz = z0 + 16; zz < z1; zz += 16) g.l3([wx, zz, 0], [L.sidewalkX0, zz, 0], G.sidewalkJoint);
+  } else {
+    q([[L.porchX1, cz - 6, 0], [L.sidewalkX0, cz - 6, 0], [L.sidewalkX0, cz + 6, 0], [L.porchX1, cz + 6, 0]], COLORS.path);
+  }
+  if (h.retaining) {   // limestone retaining wall along the front yard
+    for (const [a, b] of [[z0 + 2, h.mailZ - 10], [h.mailZ + 10, cz - 9], [cz + 9, z1 - 2]]) {
+      if (b - a < 6) continue;
+      g.box(107, 111, a, b, 0, 7, COLORS.limestone, shade(COLORS.limestone, 1.15));
+      for (let zz = a + 9; zz < b - 2; zz += 9) g.l3([111, zz, 0], [111, zz, 7], shade(COLORS.limestone, 0.78));
+    }
+  }
+}
+
+function houseWalls(g) {
+  const { h, st, quadX, quadZ, z0, z1, WH } = g;
+  const hx0 = L.houseX0, wx = L.wallX;
+  const both = (col, ha, hb) => { quadZ(z0, hx0, wx, ha, hb, shade(col, 0.82)); quadX(wx, z0, z1, ha, hb, col); };
+  if (st.finish === 'shirtwaist') {
+    const lh = Math.round(WH * 0.45);
+    both(h.lower, 0, lh);
+    courses(g, 0, lh, h.lower, 7, true);
+    both(h.wall, lh, WH);
+    courses(g, lh, WH, h.wall, 4, false);
+    quadX(wx, z0, z1, lh - 1, lh + 1, h.trim);
+    quadZ(z0, hx0, wx, lh - 1, lh + 1, shade(h.trim, 0.85));
+  } else {
+    both(h.wall, 0, WH);
+    if (st.finish === 'brick') courses(g, 0, WH, h.wall, 6, true);
+    else if (st.finish === 'tudor') timbers(g);
+    else if (st.finish === 'stucco') stucco(g);
+  }
+  quadX(wx, z0, z1, 0, 3, shade(st.finish === 'shirtwaist' ? h.lower : h.wall, 0.6));
+}
+
+// Brick / stone / siding coursing. Joints only on the big camera-facing wall;
+// the narrow street wall gets every other course so it doesn't turn to stripes.
+function courses(g, ha, hb, col, step, joints) {
+  const { l3, z0, z1, h } = g;
+  const hx0 = L.houseX0, wx = L.wallX;
+  const line = shade(col, 0.74), lineS = shade(col, 0.62);
+  let row = 0;
+  for (let v = ha + step; v < hb - 1; v += step, row++) {
+    l3([hx0, z0, v], [wx, z0, v], lineS);
+    if (row % 2 === 0) l3([wx, z0, v], [wx, z1, v], line);
+    if (!joints) continue;
+    for (let u = hx0 + 4 + hash(h.seed + row, 1) * 8; u < wx - 2; u += 9 + hash(row, u | 0) * 4) {
+      l3([u, z0, v - step], [u, z0, v], lineS);
+    }
+  }
+}
+
+function timbers(g) {
+  const { h, quadX, quadZ, l3, z0, z1, WH } = g;
+  const hx0 = L.houseX0, wx = L.wallX, tc = h.trim, mid = Math.round(WH * 0.5);
+  for (let zz = z0 + 4; zz < z1 - 4; zz += 18) quadX(wx, zz, zz + 3, 0, WH, tc);
+  for (const v of [mid, WH - 3]) { quadX(wx, z0, z1, v, v + 2, tc); quadZ(z0, hx0, wx, v, v + 2, shade(tc, 0.9)); }
+  for (let u = hx0; u < wx - 2; u += 14) {
+    quadZ(z0, u, u + 3, 0, WH, shade(tc, 0.9));
+    if (u + 14 < wx) { l3([u + 3, z0, mid + 2], [u + 14, z0, WH - 3], tc); l3([u + 3, z0, WH - 3], [u + 14, z0, mid + 2], tc); }
+  }
+}
+
+function stucco(g) {
+  const { h, z0, WH } = g;
+  for (let i = 0; i < 14; i++) {
+    const [x, y] = proj(g.X(lerp(L.houseX0 + 2, L.wallX - 2, hash(h.seed, i))), z0, lerp(2, WH - 2, hash(h.seed, i + 30)));
+    rectL(x, y, CONFIG.pixelSize, CONFIG.pixelSize, shade(h.wall, 0.88));
+  }
+}
+
+// Windows on the street wall match the hit zones in applyPaperHit.
+function houseOpenings(g) {
+  const { h, st, q, l3, quadX, quadZ, z0, WH, cz } = g;
+  const wx = L.wallX, hx0 = L.houseX0;
+  const shop = st.porch === 'stoop';
+  const frame = st.finish === 'tudor' || st.finish === 'stucco' ? h.trim : COLORS.trim;
+  const zones = hitZones(h).windows;
+  const wh0 = shop ? 5 : 12, wh1 = shop ? Math.min(WH - 12, 22) : Math.min(WH - 8, 30);
+  const pane = shop ? 24 : st.roof === 'flat' ? 10 : 14;
+  zones.forEach(([lo, hi], wi) => {
+    quadX(wx, lo, hi, wh0 - 2, wh1 + 2, frame);
+    if (h.windows[wi]) {
+      quadX(wx, lo + 2, hi - 2, wh0, wh1, COLORS.windowBroken);
+      l3([wx, lo + 4, wh1 - 2], [wx, (lo + hi) / 2, wh0 + 4], COLORS.crack);
+      l3([wx, hi - 4, wh0 + 2], [wx, (lo + hi) / 2 + 4, wh1 - 3], COLORS.crack);
+    } else {
+      quadX(wx, lo + 2, hi - 2, wh0, wh1, COLORS.window);
+      quadX(wx, lo + 2, hi - 2, wh1 - 4, wh1, COLORS.windowShine);
+      for (let m = lo + pane; m < hi - 8; m += pane) quadX(wx, m, m + 2, wh0, wh1, frame);
+    }
+    // Upper floor (decoration only; papers fly at ground-floor height)
+    if (WH >= 44 && !shop) {
+      const u0 = wh1 + 8, u1 = Math.min(WH - 6, wh1 + 22);
+      for (let m = lo + 2; m + 10 < hi; m += 16) {
+        quadX(wx, m, m + 10, u0 - 1, u1 + 1, frame);
+        quadX(wx, m + 1, m + 9, u0, u1, shade(COLORS.window, 0.85));
+      }
+    }
+  });
+
+  // Door
+  const doorCol = h.sub ? COLORS.doorSub : st.door === 'glass' ? COLORS.window : COLORS.doorPlain;
+  if (st.door === 'arch') {
+    const arch = (r, hh) => {
+      const pts = [[wx, cz - r, 0], [wx, cz + r, 0]];
+      for (let i = 0; i <= 6; i++) { const a = (i / 6) * Math.PI; pts.push([wx, cz + Math.cos(a) * r, hh + Math.sin(a) * r]); }
+      return pts;
+    };
+    q(arch(9, 18), frame);
+    q(arch(7, 18), doorCol);
+  } else {
+    quadX(wx, cz - 9, cz + 9, 0, 26, frame);
+    quadX(wx, cz - 7, cz + 7, 0, 24, doorCol);
+    if (st.door === 'glass') quadX(wx, cz - 1, cz + 1, 0, 24, frame);
+  }
+  q([[wx, cz + 3, 11], [wx, cz + 5, 11], [wx, cz + 5, 13], [wx, cz + 3, 13]], COLORS.perfect);
+
+  // Camera-facing wall: mural, window grid, or a window or two
+  if (h.mural) drawMural(g);
+  else if (WH >= 50) {
+    for (let v = 8; v + 10 < WH - 4; v += 15) {
+      for (let u = hx0 + 5; u + 9 < wx - 3; u += 14) { quadZ(z0, u, u + 9, v, v + 10, frame); quadZ(z0, u + 1, u + 8, v + 1, v + 9, shade(COLORS.window, 0.75)); }
+    }
+  } else {
+    quadZ(z0, 30, 52, 12, 28, frame);
+    quadZ(z0, 32, 50, 14, 26, shade(COLORS.window, 0.8));
+    if (WH >= 44) { quadZ(z0, 32, 50, 34, Math.min(WH - 4, 46), frame); quadZ(z0, 34, 48, 36, Math.min(WH - 6, 44), shade(COLORS.window, 0.8)); }
+  }
+}
+
+// Jazz mural: color bands, a big disc and some music notes (no text, no logos).
+function drawMural(g) {
+  const { h, q, l3, quadZ, z0, WH } = g;
+  const pal = h.mural, r = mulberry32(h.seed);
+  const xa = L.houseX0 + 4, xb = L.wallX - 4, va = 4, vb = WH - 6;
+  quadZ(z0, xa, xb, va, vb, pal[0]);
+  for (let i = 0; i < 3; i++) {
+    const u = lerp(xa, xb - 12, r()), w = 5 + r() * 7;
+    q([[u, z0, va], [Math.min(xb, u + w), z0, va], [Math.min(xb, u + w + 10), z0, vb], [Math.min(xb, u + 10), z0, vb]], pal[1 + (i % 3)]);
+  }
+  const cu = lerp(xa + 10, xb - 10, r()), cv = lerp(va + 10, vb - 10, r()), rad = Math.min(9, (vb - va) / 3);
+  const disc = [];
+  for (let i = 0; i < 12; i++) { const a = (i / 12) * Math.PI * 2; disc.push([cu + Math.cos(a) * rad, z0, cv + Math.sin(a) * rad]); }
+  q(disc, pal[1]);
+  q(disc.map(([x, z, v]) => [lerp(cu, x, 0.3), z, lerp(cv, v, 0.3)]), pal[0]);
+  for (let i = 0; i < 3; i++) {
+    const nu = lerp(xa + 3, xb - 8, r()), nv = lerp(va + 2, vb - 12, r());
+    q([[nu, z0, nv], [nu + 4, z0, nv], [nu + 4, z0, nv + 3], [nu, z0, nv + 3]], '#ffffff');
+    l3([nu + 4, z0, nv + 1], [nu + 4, z0, nv + 10], '#ffffff');
+    l3([nu + 4, z0, nv + 10], [nu + 7, z0, nv + 7], '#ffffff');
+  }
+}
+
+function gableRoof(g) {
+  const { h, st, q, l3, box, z0, z1, WH, rh } = g;
+  const hx0 = L.houseX0, wx = L.wallX, eh = WH - 2;
+  const e0 = L.eaveX0, e1 = L.eaveX1, rx = L.ridgeX, ez0 = z0 - 4, ez1 = z1 + 4;
+  q([[hx0, z0, WH], [wx, z0, WH], [rx, z0, rh]], shade(h.wall, 0.72));
+  if (st.finish === 'tudor') {   // half-timbering in the gable
+    for (const f of [0.3, 0.5, 0.7]) {
+      const u = lerp(hx0, wx, f), top = WH + (1 - Math.abs(u - rx) / (rx - hx0)) * (rh - WH);
+      l3([u, z0, WH], [u, z0, top - 1], h.trim);
+    }
+  }
+  q([[e0, ez0, eh], [e0, ez1, eh], [rx, ez1, rh], [rx, ez0, rh]], shade(h.roof, 0.7));
+  if (h.chimney) {
+    const cz0 = z0 + h.len * 0.62;
+    box(24, 32, cz0, cz0 + 10, WH + 6, rh + 6, st.finish === 'tudor' ? COLORS.stone : COLORS.brick);
+  }
+  q([[e1, ez0, eh], [e1, ez1, eh], [rx, ez1, rh], [rx, ez0, rh]], h.roof);
+  const rows = st.roof === 'tile' ? [0.2, 0.4, 0.6, 0.8] : [0.33, 0.66];
+  for (const f of rows) {
+    const x = lerp(e1, rx, f), hh = lerp(eh, rh, f);
+    l3([x, ez0, hh], [x, ez1, hh], shade(h.roof, st.roof === 'tile' ? 1.25 : 0.82));
+  }
+  l3([rx, ez0, rh], [rx, ez1, rh], shade(h.roof, 1.35));
+  l3([e1, ez0, eh], [e1, ez1, eh], COLORS.outline);
+  l3([e0, ez0, eh], [rx, ez0, rh], COLORS.outline);
+  l3([rx, ez0, rh], [e1, ez0, eh], COLORS.outline);
+}
+
+function flatRoof(g) {
+  const { h, st, q, quadX, box, z0, z1, WH } = g;
+  const hx0 = L.houseX0, wx = L.wallX, cap = shade(h.wall, 1.12);
+  q([[hx0, z0, WH], [wx, z0, WH], [wx, z1, WH], [hx0, z1, WH]], h.roof);
+  if (h.tower) {   // rooftop water tank
+    const tz = z0 + h.len * 0.55;
+    for (const [a, b] of [[24, 26], [36, 38]]) box(a, b, tz, tz + 2, WH, WH + 12, PAL.k);
+    box(22, 40, tz - 6, tz + 8, WH + 12, WH + 26, '#7a5a43');
+    box(25, 37, tz - 3, tz + 5, WH + 26, WH + 30, '#5a4130');
+  } else {
+    box(26, 38, z0 + h.len * 0.6, z0 + h.len * 0.6 + 10, WH, WH + 6, '#9aa0a8');
+  }
+  box(wx - 2, wx + 1, z0, z1, WH, WH + 4, cap);
+  box(hx0, wx + 1, z0 - 1, z0 + 2, WH, WH + 4, cap);
+  if (st.porch === 'stoop') {   // sign band with pixel "lettering"
+    quadX(wx, z0 + 8, z1 - 8, WH - 9, WH - 3, h.accent);
+    for (let zz = z0 + 14, i = 0; zz < z1 - 14; zz += 5, i++) {
+      if (hash(h.seed, i) < 0.7) quadX(wx, zz, zz + 3, WH - 7, WH - 5, '#ffffff');
+    }
+  }
+}
+
+function housePorch(g) {
+  const { h, st, q, l3, box, z0, z1, cz } = g;
+  const wx = L.wallX, ph = L.porchHalf, px1 = L.porchX1;
+  switch (st.porch) {
+    case 'deep': {   // bungalow: wide porch, tapered columns on stone piers
+      box(wx, px1, cz - ph - 2, cz + ph + 2, 0, 5, COLORS.stone);
+      box(px1, L.stepsX, cz - 9, cz + 9, 0, 2, shade(COLORS.stone, 0.9));   // front steps
+      for (const s of [1, -1]) {
+        const pz = cz + s * (ph - 2);
+        box(px1 - 8, px1 - 1, pz - 3.5, pz + 3.5, 5, 15, COLORS.stone);
+        box(px1 - 7, px1 - 2, pz - 2.5, pz + 2.5, 15, 29, h.trim);
+      }
+      const pr = ph + 5;
+      q([[wx, cz - pr, 33], [wx, cz + pr, 33], [px1 + 2, cz + pr, 28], [px1 + 2, cz - pr, 28]], shade(h.roof, 1.1));
+      l3([px1 + 2, cz - pr, 28], [px1 + 2, cz + pr, 28], COLORS.outline);
+      break;
+    }
+    case 'stoop': {   // shop step + striped awning over the display windows
+      box(wx, wx + 5, cz - 10, cz + 10, 0, 3, COLORS.stone);
+      const za = z0 + 6, zb = z1 - 6;
+      for (let zz = za, i = 0; zz < zb; zz += 10, i++) {
+        const ze = Math.min(zb, zz + 10);
+        q([[wx, zz, 26], [wx, ze, 26], [wx + 14, ze, 21], [wx + 14, zz, 21]], i % 2 ? '#f6f3ea' : h.accent);
+      }
+      l3([wx + 14, za, 21], [wx + 14, zb, 21], COLORS.outline);
+      break;
+    }
+    case 'canopy':
+      box(wx, wx + 5, cz - 12, cz + 12, 0, 3, COLORS.stone);
+      box(wx, wx + 12, cz - 14, cz + 14, 26, 28, '#2b2b35');
+      break;
+    default: {
+      box(wx, px1, cz - ph, cz + ph, 0, 4, COLORS.porch);
+      box(px1, L.stepsX, cz - 8, cz + 8, 0, 2, shade(COLORS.porch, 0.85));   // front steps
+      for (const s of [1, -1]) {
+        const pz = cz + s * (ph - 3);
+        box(px1 - 4, px1 - 1, pz - 1.5, pz + 1.5, 4, 22, st.finish === 'tudor' || st.finish === 'stucco' ? h.trim : COLORS.trim);
+      }
+      const pr = ph + 2;
+      q([[wx, cz - pr, 26], [wx, cz + pr, 26], [px1 + 1, cz + pr, 21], [px1 + 1, cz - pr, 21]], shade(h.roof, 1.15));
+      l3([px1 + 1, cz - pr, 21], [px1 + 1, cz + pr, 21], COLORS.outline);
+    }
+  }
+}
+
+// Game Day: pennants under the eaves and a waving flag by the porch.
+function houseFlags(g) {
+  const { q, box, z0, z1, WH, cz, t } = g;
+  const wx = L.wallX;
+  for (let zz = z0 + 6, i = 0; zz + 10 < z1 - 4; zz += 12, i++) {
+    q([[wx, zz, WH - 3], [wx, zz + 10, WH - 3], [wx, zz + 5, WH - 11]], i % 2 ? COLORS.flagGold : COLORS.flagRed);
+  }
+  const pz = cz + L.porchHalf + 10;
+  box(97, 99, pz - 1, pz + 1, 0, 46, '#c9ccd2');
+  const wave = (i) => Math.sin(t * 6 + i) * 1.5;
+  for (let i = 0; i < 4; i++) {
+    const xa = 99 + i * 4, xb = xa + 4;
+    q([[xa, pz, 34 + wave(i)], [xb, pz, 34 + wave(i + 1)], [xb, pz, 44 + wave(i + 1)], [xa, pz, 44 + wave(i)]],
+      i % 2 ? COLORS.flagGold : COLORS.flagRed);
+  }
+}
+
+// Trash cans, fences and lawn ornaments; knocked ones lie on the ground.
+function drawProp(h, p) {
+  const x = sideX(h.side, p.lx), y = sy(p.z), z = p.z;
+  if (y < -40 || y > view.H + 40) return;
+  switch (p.type) {
+    case 'trash':
+      if (!p.knocked) {
+        drawSpriteC(SPR.shadowS, x + 2, y + 3);
+        box3(x - 4, x + 4, z - 4, z + 4, 0, 13, COLORS.trash);
+        box3(x - 5, x + 5, z - 5, z + 5, 13, 15, shade(COLORS.trash, 0.75));
+      } else {
+        for (let i = 0; i < 5; i++) rectL(x + (i - 2) * 5, y + ((i * 7) % 5) - 6, 2, 2, COLORS.garbage[i % 3]);
+        box3(x - 7, x + 7, z - 4, z + 4, 0, 7, COLORS.trash);
+        box3(x + 9, x + 15, z + 2, z + 8, 0, 2, shade(COLORS.trash, 0.75));
+      }
+      break;
+    case 'fence': {
+      const z0 = z - p.hz, z1 = z + p.hz;
+      if (!p.knocked) {
+        for (let zz = z0; zz <= z1; zz += 7) box3(x - 1, x + 1, zz - 1, zz + 1, 0, 13, COLORS.fence);
+        for (const hh of [4, 9]) poly3([[x, z0, hh], [x, z1, hh], [x, z1, hh + 2], [x, z0, hh + 2]], shade(COLORS.fence, 0.85));
+      } else {
+        const out = sideX(h.side, p.lx - 14);
+        poly3([[x, z0, 0], [x, z1, 0], [out, z1, 0], [out, z0, 0]], shade(COLORS.fence, 0.9));
+        for (let zz = z0 + 3; zz < z1; zz += 7) poly3([[x, zz, 0], [x, zz + 1, 0], [out, zz + 1, 0], [out, zz, 0]], shade(COLORS.fence, 0.7));
+      }
+      break;
+    }
+    default: {   // flamingo / gnome
+      const spr = SPR[p.type];
+      drawSpriteC(SPR.shadowS, x, y + 1);
+      if (!p.knocked) drawSprite(spr, x, y);
+      else drawSprite(spr, x, y, h.side * Math.PI / 2);
+    }
+  }
+}
+
+function drawMailbox(h, t) {
+  const mx = sideX(h.side, L.mailboxX), mz = h.mailZ;
+  const waiting = canDeliver(h);
+  if (waiting) {
+    const pulse = 0.5 + 0.5 * Math.sin(t * 6);
+    pix.globalAlpha = 0.25 + pulse * 0.15;
+    fillPoly(ellipsePts(mx, mz, 16, 11, 16), COLORS.perfect);
+    pix.globalAlpha = 0.9;
+    pix.fillStyle = COLORS.perfect;
+    ringPixels(mx, mz, 18 + pulse * 4, 13 + pulse * 3);
+    pix.globalAlpha = 1;
+  }
+  box3(mx - 1, mx + 1, mz - 1, mz + 1, 0, 11, COLORS.post);
+  box3(sideX(h.side, L.mailboxX - 4), sideX(h.side, L.mailboxX + 4), mz - 6, mz + 6, 11, 18,
+    h.sub ? COLORS.mailboxSub : COLORS.mailbox);
+  if (h.delivered) box3(sideX(h.side, L.mailboxX + 4), sideX(h.side, L.mailboxX + 6), mz - 2, mz + 3, 14, 25, COLORS.flag);
+}
+
+function drawDecor(d, t) {
+  const y = sy(d.z);
+  if (y < -20 || y - 90 > view.H) return;
+  switch (d.type) {
+    case 'tree':
+      drawSpriteC(SPR.shadowTree, d.x + 4, y - 2);
+      drawSprite(SPR['tree_' + (d.pal || 'green')], d.x, y);
+      break;
+    case 'fountain': drawFountain(d.x, d.z, t, 1); break;
+    case 'smoker': drawSmoker(d.x, d.z, t); break;
+    case 'grill': drawGrill(d.x, d.z, t); break;
+    case 'crowd': drawCrowd(d, t); break;
+    case 'sidefence': drawSideFence(d); break;
+    case 'patio': drawPatio(d); break;
+    case 'jogside': {   // joggers running in place along the sidewalk
+      drawSpriteC(SPR.shadowS, d.x, y + 1);
+      drawSprite(Math.floor(t * 8 + d.phase) % 2 ? SPR.joggerB : SPR.joggerA, d.x, y - (Math.floor(t * 8 + d.phase) % 2) * CONFIG.pixelSize);
+      break;
+    }
+    default: drawSprite(SPR.bush, d.x, y);
+  }
+}
+
+// Ellipse in the ground plane at height h, projected.
+function ell3(x, z, rx, rz, h, n = 16) {
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    pts.push(proj(x + Math.cos(a) * rx, z + Math.sin(a) * rz, h));
+  }
+  return pts;
+}
+function pixelAt(x, z, h, color) {
+  const [px, py] = proj(x, z, h);
+  pix.fillStyle = color;
+  pix.fillRect(Math.round(bx(px)), Math.round(by(py)), 1, 1);
+}
+
+// Stone basin, pedestal and animated jets.
+function drawFountain(x, z, t, s) {
+  fillPoly(ell3(x, z - 3, 17 * s, 11 * s, 0), COLORS.shadow);
+  fillPoly(ell3(x, z, 16 * s, 10 * s, 0), shade(COLORS.limestone, 0.7));
+  fillPoly(ell3(x, z, 16 * s, 10 * s, 5), COLORS.limestone);
+  fillPoly(ell3(x, z, 13 * s, 8 * s, 5), COLORS.water);
+  for (let i = 0; i < 6; i++) {
+    const r = ((t * 8 + i * 3) % 12) * s, a = i * 1.7;
+    pixelAt(x + Math.cos(a) * r, z + Math.sin(a) * r * 0.6, 5, COLORS.waterLight);
+  }
+  const top = 14 * s + 2;
+  box3(x - 2 * s, x + 2 * s, z - 2 * s, z + 2 * s, 5, top, COLORS.limestone);
+  fillPoly(ell3(x, z, 5 * s, 3.5 * s, top), COLORS.water);
+  const N = 10;
+  for (let i = 0; i < N; i++) {
+    const ph = (t * 1.3 + i / N) % 1, a = (i / N) * Math.PI * 2, r = (3 + ph * 9) * s;
+    pixelAt(x + Math.cos(a) * r, z + Math.sin(a) * r * 0.7, top + Math.sin(Math.PI * ph) * 9 * s, COLORS.waterLight);
+  }
+  for (let k = 0; k < 3; k++) pixelAt(x, z, top + 2 + k * 3 + ((t * 20) % 3), '#ffffff');
+}
+
+function smokePuffs(x, z, h, t) {
+  for (let i = 0; i < 4; i++) {
+    const ph = (t * 0.6 + i / 4) % 1;
+    pix.globalAlpha = 1 - ph;
+    pixelAt(x + ph * 6, z + ph * 4, h + ph * 16, COLORS.smoke);
+    pixelAt(x + ph * 6 + 2, z + ph * 4, h + ph * 16, COLORS.smoke);
+  }
+  pix.globalAlpha = 1;
+}
+
+function drawSmoker(x, z, t) {
+  drawSpriteC(SPR.shadowM, x, sy(z) + 2);
+  for (const lx of [-6, 5]) box3(x + lx, x + lx + 1, z - 1, z + 1, 0, 6, PAL.k);
+  box3(x - 12, x - 8, z - 3, z + 3, 5, 11, '#2b2b35', '#45454f');   // firebox
+  box3(x - 8, x + 8, z - 4, z + 4, 6, 14, '#2b2b35', '#45454f');    // barrel
+  box3(x + 5, x + 7, z - 1, z + 1, 14, 24, '#2b2b35');              // stack
+  smokePuffs(x + 6, z, 25, t);
+}
+
+function drawGrill(x, z, t) {
+  drawSpriteC(SPR.shadowM, x, sy(z) + 2);
+  box3(x - 14, x - 7, z - 3, z + 3, 0, 6, COLORS.flagRed, '#ffffff');   // cooler
+  for (const lx of [-3, 2]) box3(x + lx, x + lx + 1, z - 1, z + 1, 0, 6, PAL.k);
+  box3(x - 4, x + 4, z - 4, z + 4, 6, 12, '#2b2b35', '#45454f');      // kettle
+  for (const lx of [9, 20]) box3(x + lx, x + lx + 1, z - 4, z - 2, 0, 9, '#9aa0a8');
+  box3(x + 8, x + 22, z - 5, z + 5, 9, 11, '#f4f1ea');                // folding table
+  smokePuffs(x, z, 13, t);
+}
+
+function drawCrowd(d, t) {
+  const ps = CONFIG.pixelSize, folks = [];
+  for (let i = 0; i < d.n; i++) folks.push({ i, ox: (hash(d.seed, i) - 0.5) * 30, oz: (hash(d.seed, i + 9) - 0.5) * 26 });
+  folks.sort((a, b) => b.oz - a.oz);
+  for (const f of folks) {
+    const y = sy(d.z + f.oz);
+    const jump = Math.floor(t * 4 + f.i * 1.7) % 3 === 0 ? ps * 2 : 0;   // cheering
+    drawSpriteC(SPR.shadowS, d.x + f.ox, y + 1);
+    drawSprite(f.i % 2 ? SPR.crowdG : SPR.crowdR, d.x + f.ox, y - jump);
+  }
+}
+
+// Crossing signals at both curbs; lights flash from the bell until the car is past.
+function drawCrossing(tr, t) {
+  if (!tr.car) return;   // bonus-course rails have no streetcar
+  const y = sy(tr.z);
+  if (y < -10 || y - 60 > view.H) return;
+  const car = tr.car;
+  const gone = car.active && (car.dir > 0 ? car.x > view.W + 90 : car.x < -90);
+  const flashing = car.warned && !gone;
+  const blink = Math.floor(t * 4) % 2 === 0;
+  for (const side of [-1, 1]) {
+    const x = sideX(side, 114), z = tr.z - 12;
+    box3(x - 1, x + 1, z - 1, z + 1, 0, 34, '#e0e0e0');
+    line3([x - 6, z, 28], [x + 6, z, 36], '#ffffff');
+    line3([x - 6, z, 36], [x + 6, z, 28], '#ffffff');
+    box3(x - 5, x - 2, z - 1, z + 1, 20, 23, flashing && blink ? COLORS.bad : '#5a2a2a');
+    box3(x + 2, x + 5, z - 1, z + 1, 20, 23, flashing && !blink ? COLORS.bad : '#5a2a2a');
+  }
+}
+
+function drawStreetcar(o) {
+  if (o.x + o.w / 2 < -40 || o.x - o.w / 2 > view.W + 40) return;
+  const x0 = o.x - o.w / 2, x1 = o.x + o.w / 2, z0 = o.z - o.h / 2, z1 = o.z + o.h / 2;
+  poly3([[x0, z0 - 6, 0], [x1, z0 - 6, 0], [x1, z1 - 6, 0], [x0, z1 - 6, 0]], COLORS.shadow);
+  box3(x0, x1, z0, z1, 3, 30, COLORS.streetcar, shade(COLORS.streetcar, 1.2));
+  poly3([[x0, z0, 6], [x1, z0, 6], [x1, z0, 10], [x0, z0, 10]], COLORS.streetcarAccent);
+  poly3([[x0 + 6, z0, 15], [x1 - 6, z0, 15], [x1 - 6, z0, 26], [x0 + 6, z0, 26]], COLORS.carGlass);
+  for (let xx = x0 + 24; xx < x1 - 12; xx += 24) poly3([[xx, z0, 15], [xx + 3, z0, 15], [xx + 3, z0, 26], [xx, z0, 26]], COLORS.streetcar);
+  const head = o.dir > 0 ? x1 - 8 : x0 + 4;
+  poly3([[head, z0, 11], [head + 4, z0, 11], [head + 4, z0, 14], [head, z0, 14]], COLORS.perfect);
+  box3(o.x - 12, o.x + 12, o.z - 5, o.z + 5, 30, 33, '#9aa0a8');
+  line3([o.x - 8, o.z, 33], [o.x, o.z, 44], PAL.k);
+  line3([o.x, o.z, 44], [o.x + 8, o.z, 33], PAL.k);
+}
+
+// Drifting BBQ smoke cloud (drawn over the world, partly hides the road).
+function drawSmoke() {
+  for (const s of game.smokes) {
+    const age = s.max - s.life;
+    const grow = 0.6 + 0.6 * (age / s.max);
+    pix.globalAlpha = clamp(Math.min(age / 0.6, s.life / 0.8), 0, 1) * 0.8;
+    for (let k = 0; k < 6; k++) {
+      const [px, py] = proj(s.x + (hash(s.seed, k) - 0.5) * 60 * grow, s.z + (hash(s.seed, k + 7) - 0.5) * 34 * grow, 18);
+      const r = (16 + hash(s.seed, k + 3) * 14) * grow;
+      const pts = [];
+      for (let i = 0; i < 14; i++) { const a = (i / 14) * Math.PI * 2; pts.push([px + Math.cos(a) * r, py + Math.sin(a) * r * 0.75]); }
+      fillPoly(pts, k % 2 ? COLORS.smoke : COLORS.smokeDark);
+    }
+  }
+  pix.globalAlpha = 1;
+}
+
+// River Market: city skyline "in the distance" across the top of the screen.
+function drawSkyline() {
+  const sky = theme().sky, H = CONFIG.skylineHeight;
+  const ps = CONFIG.pixelSize, ext = PAD * ps, W = view.W + ext * 2;
+  rectL(-ext, -ext, W, ext + H * 0.4, sky[0]);
+  rectL(-ext, H * 0.4, W, H * 0.35, sky[1]);
+  rectL(-ext, H * 0.75, W, H * 0.25, sky[2]);
+  for (let i = 0; i < W / ps; i += 2) {   // dithered band edges
+    rectL(-ext + i * ps, H * 0.4 - ps, ps, ps, sky[1]);
+    rectL(-ext + (i + 1) * ps, H * 0.75 - ps, ps, ps, sky[2]);
+  }
+  let x = -ext;
+  for (let i = 0; x < view.W + ext; i++) {
+    const w = 14 + hash(i, 1) * 24;
+    const bh = (20 + hash(i, 2) * 50) * (Math.abs(x - view.W * 0.55) < 100 ? 1.25 : 0.8);
+    rectL(x, H - bh, w - 2, bh, COLORS.skyline);
+    if (hash(i, 3) < 0.25) rectL(x + w / 2 - 2, H - bh - 10, 2, 10, COLORS.skyline);
+    for (let wy = H - bh + 4; wy < H - 4; wy += 6) {
+      for (let wxx = x + 3; wxx < x + w - 5; wxx += 5) if (hash(i * 31 + (wy | 0), wxx | 0) < 0.3) rectL(wxx, wy, ps, ps, '#ffd76a');
+    }
+    x += w;
+  }
+  for (let i = 0; i < W / ps; i += 2) rectL(-ext + i * ps, H, ps, ps, COLORS.skyline);
+}
+
+
+function drawObstacle(o, t) {
+  const y = sy(o.z);
+  if (y < -80 || y > view.H + 80) return;
+  const ps = CONFIG.pixelSize;
+  switch (o.type) {
+    case 'fountain':   // bonus-course fountain in the road (jump it)
+      drawFountain(o.x, o.z, t, 1.6);
+      break;
+    case 'car': {
+      if (o.cross) { drawCrossCar(o); break; }
+      const x0 = o.x - o.w / 2, x1 = o.x + o.w / 2, z0 = o.z - o.h / 2, z1 = o.z + o.h / 2;
+      poly3([[x0 - 2, z0 - 6, 0], [x1 + 2, z0 - 6, 0], [x1 + 2, z1 - 6, 0], [x0 - 2, z1 - 6, 0]], COLORS.shadow);
+      for (const zw of [z1 - 14, z0 + 12]) {
+        box3(x0 - 1, x0 + 5, zw - 6, zw + 6, 0, 8, COLORS.tire);
+        box3(x1 - 5, x1 + 1, zw - 6, zw + 6, 0, 8, COLORS.tire);
+      }
+      box3(x0, x1, z0, z1, 4, 16, o.color);
+      for (const lx of [x0 + 3, x1 - 9]) poly3([[lx, z0, 10], [lx + 6, z0, 10], [lx + 6, z0, 13], [lx, z0, 13]], COLORS.tail);
+      box3(x0 + 4, x1 - 4, z0 + 18, z1 - 16, 16, 27, COLORS.carGlass, shade(o.color, 1.2));
+      break;
+    }
+    case 'dog':
+    case 'fan': {
+      const base = y + o.h / 2;
+      drawSpriteC(SPR.shadowM, o.x, base - 1);
+      const run = o.active && Math.floor(o.anim / Math.PI) % 2 === 1;
+      drawSprite(SPR[o.type + (run ? 'B' : 'A') + (o.dir > 0 ? '' : '_L')], o.x, base);
+      if (!o.active) {   // telegraph before it bolts
+        drawSprite(SPR.bang, o.x + Math.round(Math.sin(t * 15)) * ps, base - (o.type === 'fan' ? 30 : 18));
+      }
+      break;
+    }
+    case 'cone':
+      drawSpriteC(SPR.shadowS, o.x, y + 3);
+      drawSprite(SPR.cone, o.x, y + o.h / 2);
+      break;
+    case 'jogger': {
+      const base = y + o.h / 2;
+      drawSpriteC(SPR.shadowS, o.x, base - 1);
+      drawSprite(Math.floor(o.anim) % 2 ? SPR.joggerB : SPR.joggerA, o.x, base);
+      break;
+    }
+    case 'median': {
+      const x0 = o.x - o.w / 2, x1 = o.x + o.w / 2;
+      box3(x0, x1, o.z - o.h / 2, o.z + o.h / 2, 0, 3, COLORS.limestone, theme().ground.grass);
+      drawFountain(o.x, o.z, t, 0.9);
+      break;
+    }
+    case 'streetcar':
+      drawStreetcar(o);
+      break;
+    case 'skater': {
+      const base = y + o.h / 2;
+      drawSpriteC(SPR.shadowM, o.x, base - 2);
+      drawSprite(SPR.skater, o.x, base);
+      break;
+    }
+    case 'barrier': {   // striped sawhorse (bonus course)
+      const x0 = o.x - o.w / 2, x1 = o.x + o.w / 2, z = o.z;
+      poly3([[x0, z - 6, 0], [x1, z - 6, 0], [x1, z, 0], [x0, z, 0]], COLORS.shadow);
+      for (const lx of [x0 + 5, x1 - 5]) box3(lx - 2, lx + 2, z - 3, z + 3, 0, 10, COLORS.post);
+      box3(x0, x1, z - 2, z + 2, 10, 18, COLORS.barrier);
+      for (let sx = x0 + 4; sx < x1 - 8; sx += 16) {
+        poly3([[sx, z - 2, 10], [sx + 8, z - 2, 10], [sx + 8, z - 2, 18], [sx, z - 2, 18]], COLORS.barrierStripe);
+      }
+      break;
+    }
+  }
+}
+
+// Wedge ramp with hazard stripes (bonus course).
+function drawRamp(r) {
+  const x0 = r.x - r.w / 2, x1 = r.x + r.w / 2, z0 = r.z - r.h / 2, z1 = r.z + r.h / 2, H = 12;
+  if (sy(z0) < -20 || sy(z1) > view.H + 40) return;
+  const cx = view.W / 2;
+  if (x1 < cx) poly3([[x1, z0, 0], [x1, z1, 0], [x1, z1, H]], shade(COLORS.ramp, 0.65));
+  else if (x0 > cx) poly3([[x0, z0, 0], [x0, z1, 0], [x0, z1, H]], shade(COLORS.ramp, 0.65));
+  const n = 5;
+  for (let i = 0; i < n; i++) {
+    const za = lerp(z0, z1, i / n), zb = lerp(z0, z1, (i + 1) / n);
+    poly3([[x0, za, H * i / n], [x1, za, H * i / n], [x1, zb, H * (i + 1) / n], [x0, zb, H * (i + 1) / n]],
+      i % 2 ? COLORS.rampStripe : COLORS.ramp);
+  }
+}
+
+// Bonus targets: a city object plus a floating bullseye until it's hit.
+function drawTarget(tg, t) {
+  const x = sideX(tg.side, tg.lx), y = sy(tg.z), z = tg.z;
+  if (y < -10 || y - 70 > view.H) return;
+  switch (tg.kind) {
+    case 'mailbox':
+      box3(x - 1, x + 1, z - 1, z + 1, 0, 11, COLORS.post);
+      box3(x - 4, x + 4, z - 5, z + 5, 11, 18, '#3a5a8c');
+      if (tg.hit) box3(x + 4, x + 5, z - 2, z + 3, 14, 24, COLORS.bad);
+      break;
+    case 'sign': {   // sidewalk sign board facing the street
+      const col = ['#d64545', '#2f9e6b', '#3a7bd5', '#e8a33d'][(hash(z | 0, 3) * 4) | 0];
+      if (!tg.hit) {
+        for (const pz of [z - 8, z + 8]) box3(x - 1, x + 1, pz - 1, pz + 1, 0, 24, '#4a4d55');
+        poly3([[x, z - 10, 12], [x, z + 10, 12], [x, z + 10, 25], [x, z - 10, 25]], col);
+        for (let i = 0; i < 4; i++) poly3([[x, z - 7 + i * 4, 18], [x, z - 5 + i * 4, 18], [x, z - 5 + i * 4, 20], [x, z - 7 + i * 4, 20]], '#ffffff');
+      } else {   // knocked flat
+        const out = sideX(tg.side, tg.lx - 13);
+        poly3([[x, z - 10, 0], [out, z - 10, 0], [out, z + 10, 0], [x, z + 10, 0]], col);
+      }
+      break;
+    }
+    case 'newsstand':
+      box3(x - 5, x + 5, z - 7, z + 7, 0, 16, '#2f6b4f', tg.hit ? '#9fd3a8' : '#3f8a63');
+      poly3([[x - 4, z - 7, 6], [x + 4, z - 7, 6], [x + 4, z - 7, 13], [x - 4, z - 7, 13]], '#cfe9f7');
+      for (let i = 0; i < 3; i++) rectL(...proj(x - 3 + i * 3, z - 7, 9), 2, 2, PAL.e);
+      break;
+    case 'smoker': drawSmoker(x, z, t); break;
+    case 'fountain': drawFountain(x, z, t, 0.75); break;
+    default:
+      drawSpriteC(SPR.shadowS, x, y + 1);
+      drawSprite(SPR.target, x, y, tg.hit ? tg.side * Math.PI / 2 : 0);
+  }
+  if (!tg.hit && tg.kind) {
+    const [rx, ry] = proj(x, z, 34 + (Math.sin(t * 5 + z) > 0 ? CONFIG.pixelSize : 0));
+    drawSprite(SPR.ring, rx, ry);
+  }
+}
+
+// Big gold marker over every subscriber still waiting for a paper. It sits
+// above the roof, so it's the first thing of the house to scroll on screen;
+// while the house is still above the HUD it peeks out right under it.
+function drawSubMarkers(t) {
+  const minY = view.safeTop + 66;
+  for (const h of game.houses) {
+    if (!canDeliver(h) || h.passed) continue;
+    const st = HOUSE_STYLES[h.style];
+    const top = h.wallH + (st.roof === 'flat' ? 6 : st.roofH);
+    const [mx, my] = proj(sideX(h.side, 66), h.z + h.len / 2, top + 16);
+    if (my < -40 || my > view.H + 10) continue;
+    const bob = Math.sin(t * 5 + h.z) > 0 ? CONFIG.pixelSize * 2 : 0;
+    drawSprite(SPR.marker, mx, Math.max(my, minY + SPR.marker.height * CONFIG.pixelSize) - bob);
+  }
+}
+
+// Westport string lights along the sidewalks, twinkling.
+function drawLights(t) {
+  const colors = ['#ffd76a', '#ff8c42', '#ff5a5f', '#9fd3f0'];
+  for (const ln of game.lights) {
+    const x = sideX(ln.side, 108);
+    for (let za = ln.z0; za < ln.z1; za += 60) {
+      if (sy(za) < -60 || sy(za + 60) > view.H + 20) continue;
+      box3(x - 1, x + 1, za - 1, za + 1, 0, 30, '#4a4d55');
+      for (let f = 0.1; f < 1; f += 0.15) {
+        const z = za + f * 60, hh = 30 - Math.sin(Math.PI * f) * 7;
+        const c = colors[((za / 60 + f * 7) | 0) % colors.length];
+        pix.globalAlpha = hash((z | 0) + Math.floor(t * 3), 1) < 0.15 ? 0.4 : 1;
+        pixelAt(x, z, hh, c);
+      }
+      pix.globalAlpha = 1;
+    }
+  }
+}
+
+function drawPatio(d) {
+  const col = ['#d64545', '#2f9e6b', '#e8a33d', '#3a7bd5'][d.seed % 4];
+  box3(d.x - 1, d.x + 1, d.z - 1, d.z + 1, 0, 12, '#4a4d55');
+  box3(d.x - 6, d.x + 6, d.z - 6, d.z + 6, 9, 11, '#f4f1ea');
+  for (const ox of [-9, 8]) box3(d.x + ox, d.x + ox + 2, d.z - 2, d.z + 2, 0, 7, '#6b5440');
+  fillPoly(ell3(d.x, d.z, 12, 9, 22, 8), col);
+  fillPoly(ell3(d.x, d.z, 6, 4, 23, 8), shade(col, 1.25));
+}
+
+// Picket fence along the lot line between two houses.
+function drawSideFence(d) {
+  const z = d.z, X = (lx) => sideX(d.side, lx);
+  for (let lx = 18; lx <= 92; lx += 6) box3(X(lx) - 1, X(lx) + 1, z - 1, z + 1, 0, 12, COLORS.fence);
+  for (const hh of [4, 9]) poly3([[X(18), z, hh], [X(92), z, hh], [X(92), z, hh + 2], [X(18), z, hh + 2]], shade(COLORS.fence, 0.85));
+}
+
+// Parked car turned across the road (bonus course jump).
+function drawCrossCar(o) {
+  const x0 = o.x - o.w / 2, x1 = o.x + o.w / 2, z0 = o.z - o.h / 2, z1 = o.z + o.h / 2;
+  poly3([[x0 - 2, z0 - 6, 0], [x1 + 2, z0 - 6, 0], [x1 + 2, z1 - 6, 0], [x0 - 2, z1 - 6, 0]], COLORS.shadow);
+  for (const xw of [x0 + 10, x1 - 16]) {
+    box3(xw, xw + 8, z0 - 1, z0 + 4, 0, 8, COLORS.tire);
+    box3(xw, xw + 8, z1 - 4, z1 + 1, 0, 8, COLORS.tire);
+  }
+  box3(x0, x1, z0, z1, 4, 16, o.color);
+  box3(x0 + 18, x1 - 16, z0 + 3, z1 - 3, 16, 27, COLORS.carGlass, shade(o.color, 1.2));
+  poly3([[x0 + 22, z0 + 3, 18], [x1 - 20, z0 + 3, 18], [x1 - 20, z0 + 3, 25], [x0 + 22, z0 + 3, 25]], shade(COLORS.carGlass, 1.4));
+}
+
+function drawBike(_, t) {
+  if (bike.invuln > 0 && Math.floor(t * 12) % 2) return;   // blink after respawn
+  drawSpriteC(SPR.shadowBike, bike.x + 4, view.bikeY + 4);
+  const pedal = !bike.crashed && bike.airT <= 0 && Math.floor(game.dist / 22) % 2 === 1;
+  const lean = Math.round(clamp(bike.vx * CONFIG.leanPerSpeed, -CONFIG.maxLean, CONFIG.maxLean) / 0.1) * 0.1;
+  drawSprite(pedal ? SPR.riderB : SPR.riderA, bike.x, view.bikeY + CONFIG.bikeHalfL - bike.h * CONFIG.heightY,
+    bike.crashed ? bike.spin : lean);
+}
+
+// Papers fly flat and straight sideways; the shadow shows where they are.
+function drawFlyingPaper(p) {
+  const x = sideX(p.side, p.lx);
+  drawSpriteC(SPR.shadowS, x, sy(p.z));
+  const [px, py] = proj(x, p.z, p.h);
+  drawSpriteC(SPR.paper, px, py, p.rot);
+}
+
+function drawParticles() {
+  for (const p of game.particles) {
+    pix.globalAlpha = clamp(p.life / p.max, 0, 1);
+    pix.fillStyle = p.color;
+    const [x, y] = proj(p.x, p.z, p.h);
+    const s = p.size > 3 ? 2 : 1;
+    pix.fillRect(Math.round(bx(x)), Math.round(by(y)), s, s);
+  }
+  pix.globalAlpha = 1;
+}
+
+// Debug (H): outline every house's hit areas at paper height.
+// green = door/porch/steps, gold = mailbox, red = windows. The outline spans
+// from where the paper makes contact back to the wall it would hit.
+function drawHitAreas() {
+  const hgt = CONFIG.throwHeight;
+  const outline = (side, lx0, lx1, z0, z1, color) => {
+    const c = [[lx0, z0], [lx1, z0], [lx1, z1], [lx0, z1]].map(([lx, z]) => proj(sideX(side, lx), z, hgt));
+    for (let i = 0; i < 4; i++) lineL(c[i], c[(i + 1) % 4], color);
+  };
+  for (const h of game.houses) {
+    if (h.scenery || sy(h.z) < -40 || sy(h.z + h.len) > view.H + 40) continue;
+    const zn = hitZones(h);
+    outline(h.side, L.wallX, L.stepsX, zn.porch[0], zn.porch[1], COLORS.good);
+    outline(h.side, L.mailboxX - 4, L.mailboxX + 4, zn.mailbox[0], zn.mailbox[1], COLORS.perfect);
+    for (const [lo, hi] of zn.windows) outline(h.side, L.wallX - 2, L.wallX + 2, lo, hi, COLORS.bad);
+  }
+}
+
+// --- Screen-space overlays (full resolution) ---
+function drawPops() {
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  for (const p of game.pops) {
+    const k = p.life / p.max;
+    const scale = k > 0.85 ? 1 + (k - 0.85) * 3 : 1;   // little pop on spawn
+    ctx.globalAlpha = clamp(k * 1.6, 0, 1);
+    ctx.font = `${Math.round(p.size * 0.62 * scale)}px ${FONT}`;
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = PAL.k;
+    ctx.strokeText(p.text, p.x, p.y);
+    ctx.fillStyle = p.color;
+    ctx.fillText(p.text, p.x, p.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawFlash() {
+  if (game.flash <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = Math.min(0.5, game.flash);
+  ctx.strokeStyle = game.flashColor;
+  ctx.lineWidth = 16;
+  ctx.strokeRect(0, 0, view.W, view.H);
+  ctx.restore();
+}
+
+function textShadowed(text, x, y, color) {
+  ctx.fillStyle = PAL.k;
+  ctx.fillText(text, x + 2, y + 2);
+  ctx.fillStyle = color;
+  ctx.fillText(text, x, y);
+}
+
+function drawHUD() {
+  const top = view.safeTop;
+  ctx.fillStyle = 'rgba(16,18,30,0.55)';
+  ctx.fillRect(0, 0, view.W, top + 62);
+
+  ctx.textBaseline = 'alphabetic';
+  ctx.textAlign = 'left';
+  ctx.font = `20px ${FONT}`;
+  textShadowed(String(game.score), 12, top + 32, '#fff');
+  ctx.font = `8px ${FONT}`;
+  const s = game.stats;
+  textShadowed(`W${game.week} ${DAY_NAMES[game.day].slice(0, 3)} ${theme().name}  ${s.deliveries}/${s.subs}`, 12, top + 50, '#b8c0cc');
+
+  if (game.phase !== 'route') {
+    ctx.textAlign = 'center';
+    ctx.font = `10px ${FONT}`;
+    textShadowed('BONUS', view.W / 2, top + 30, COLORS.good);
+  }
+
+  if (debug.hitAreas) {
+    ctx.textAlign = 'center';
+    ctx.font = `8px ${FONT}`;
+    textShadowed('HIT AREAS (H)', view.W / 2, top + 52, COLORS.good);
+  }
+
+  // Lives (hidden when one crash ends the run)
+  if (CONFIG.lives <= 1) return;
+  const hw = SPR.heart.width * 2, hh = SPR.heart.height * 2;
+  for (let i = 0; i < CONFIG.lives; i++) {
+    ctx.globalAlpha = i < game.lives ? 1 : 0.25;
+    ctx.drawImage(SPR.heart, view.W - 12 - hw - i * (hw + 4), top + 40, hw, hh);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// Big centred card: day intro, PERFECT DELIVERY!, BONUS COURSE!
+function drawBanner() {
+  const b = game.banners[0];
+  if (!b) return;
+  const age = b.max - b.t;
+  const a = clamp(Math.min(age / 0.2, b.t / 0.35), 0, 1);
+  const pop = age < 0.25 ? 1 + (0.25 - age) * 1.6 : 1;
+  const y = view.H * 0.24;
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = `${Math.round(20 * pop)}px ${FONT}`;
+  const w = Math.min(view.W - 16, Math.max(ctx.measureText(b.title).width, 200) + 36);
+  const extra = b.place ? 18 : 0;
+  ctx.fillStyle = PAL.k;
+  ctx.fillRect(view.W / 2 - w / 2 - 4, y - 34, w + 8, 72 + extra);
+  ctx.fillStyle = '#2a3346';
+  ctx.fillRect(view.W / 2 - w / 2, y - 30, w, 64 + extra);
+  textShadowed(b.title, view.W / 2, y - 8, b.color);
+  if (b.place) {   // neighborhood under the day name
+    ctx.font = `11px ${FONT}`;
+    textShadowed(b.place, view.W / 2, y + 16, COLORS.perfect);
+  }
+  ctx.font = `9px ${FONT}`;
+  textShadowed(b.sub, view.W / 2, y + 18 + extra, '#ffffff');
+  ctx.restore();
+}
+
+function drawHint(t) {
+  if (game.state !== 'playing' || !isFirstDay() || game.time > CONFIG.graceTime) return;
+  const a = clamp(Math.min((CONFIG.graceTime - game.time) / 0.8, game.time / 0.3), 0, 1);
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = `10px ${FONT}`;
+  const lines = [tiltActive() ? 'TILT TO STEER' : 'DRAG TO STEER', 'TAP LEFT/RIGHT TO THROW'];
+  const w = Math.max(...lines.map((s) => ctx.measureText(s).width)) + 28;
+  const y = view.H * 0.44;
+  ctx.fillStyle = PAL.k;
+  ctx.fillRect(view.W / 2 - w / 2 - 3, y - 25, w + 6, 50);
+  ctx.fillStyle = '#2a3346';
+  ctx.fillRect(view.W / 2 - w / 2, y - 22, w, 44);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(lines[0], view.W / 2, y - 8);
+  ctx.fillStyle = COLORS.perfect;
+  ctx.fillText(lines[1], view.W / 2, y + 10);
+
+  // Tap-zone labels near the bottom
+  ctx.globalAlpha = a * (0.6 + 0.3 * Math.sin(t * 5));
+  ctx.font = `10px ${FONT}`;
+  const ty = view.H - 26;
+  textShadowed('<< TAP', 56, ty, '#fff');
+  textShadowed('TAP >>', view.W - 56, ty, '#fff');
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fillRect(view.W / 2 - 1, view.bikeY + 40, 2, view.H - view.bikeY - 50);
+  ctx.restore();
+}
+
+
+// ---------------------------------------------------------------------
+// 9. UI (HTML overlay: title + game over + share)
+// ---------------------------------------------------------------------
+const ui = {
+  overlay: document.getElementById('overlay'),
+  title: document.getElementById('screen-title'),
+  over: document.getElementById('screen-over'),
+  day: document.getElementById('screen-day'),
+  overTitle: document.getElementById('over-title'),
+  tiltBtn: document.getElementById('tilt-btn'),
+  steerMode: document.getElementById('steer-mode'),
+  titleBest: document.getElementById('title-best'),
+  dayTitle: document.getElementById('day-title'),
+  dayPlace: document.getElementById('day-place'),
+  dayPerfect: document.getElementById('day-perfect'),
+  sumDeliveries: document.getElementById('sum-deliveries'),
+  sumMailbox: document.getElementById('sum-mailbox'),
+  sumWindows: document.getElementById('sum-windows'),
+  sumBonus: document.getElementById('sum-bonus'),
+  sumScore: document.getElementById('sum-score'),
+  sumSubs: document.getElementById('sum-subs'),
+  sumNext: document.getElementById('sum-next'),
+  reason: document.getElementById('over-reason'),
+  score: document.getElementById('over-score'),
+  best: document.getElementById('over-best'),
+  reached: document.getElementById('over-reached'),
+  newBest: document.getElementById('new-best'),
+  share: document.getElementById('share-btn'),
+  toast: document.getElementById('toast'),
+};
+let lastPointerType = 'mouse';
+window.addEventListener('pointerdown', (e) => { lastPointerType = e.pointerType; }, true);
+
+function hideOverlay() { ui.overlay.classList.add('hidden'); }
+
+function showPanel(panel) {
+  for (const p of [ui.title, ui.over, ui.day]) p.classList.toggle('hidden', p !== panel);
+  ui.overlay.classList.remove('hidden');
+}
+
+function showTitle() {
+  ui.titleBest.textContent = best;
+  updateSteerUI();
+  showPanel(ui.title);
+}
+
+function showGameOver() {
+  game.state = 'over';
+  game.overShownAt = performance.now();
+  const isNewBest = game.score > best;
+  if (isNewBest) { best = game.score; storage.set(BEST_KEY, best); }
+
+  ui.overTitle.textContent = game.overTitle || 'Route over';
+  ui.reason.textContent = game.overReason;
+  ui.score.textContent = game.score;
+  ui.best.textContent = best;
+  ui.reached.textContent = `${DAY_NAMES[game.day].slice(0, 3)} W${game.week}`;   // furthest day / week
+  ui.newBest.classList.toggle('hidden', !isNewBest || best === 0);
+  ui.toast.textContent = '';
+  showPanel(ui.over);
+}
+
+// End of day: a perfect day earns one more subscriber house for tomorrow.
+// Tapping continues to the next day; after Sunday comes the next week.
+function showDaySummary() {
+  game.state = 'summary';
+  game.overShownAt = performance.now();
+  pointers.clear();
+  const s = game.stats;
+
+  for (const t of game.street) t.newSub = false;
+  if (s.perfect) {
+    const free = game.street.filter((t) => !t.sub);
+    if (free.length) { const t = pick(free); t.sub = true; t.newSub = true; s.added = 1; }
+  }
+  const subsNext = game.street.filter((t) => t.sub).length;
+  const nextDay = (game.day + 1) % DAY_NAMES.length;
+
+  const name = DAY_NAMES[game.day];
+  ui.dayTitle.textContent = `${name[0]}${name.slice(1).toLowerCase()} done`;
+  ui.dayPlace.textContent = theme().name;
+  ui.dayPerfect.classList.toggle('hidden', !s.perfect);
+  ui.sumDeliveries.textContent = `${s.deliveries}/${s.subs}`;
+  ui.sumMailbox.textContent = s.mailbox;
+  ui.sumWindows.textContent = s.windows;
+  ui.sumBonus.textContent = s.bonusClean ? `${s.bonusPoints} CLEAR` : s.bonusPoints;
+  ui.sumScore.textContent = game.score - s.startScore;
+  const parts = [];
+  if (s.added) parts.push('Perfect day: +1 new subscriber');
+  parts.push(`${subsNext} subscriber${subsNext === 1 ? '' : 's'} tomorrow`);
+  ui.sumSubs.textContent = parts.join(' · ');
+  const next = `${DAY_NAMES[nextDay][0]}${DAY_NAMES[nextDay].slice(1).toLowerCase()}`;
+  ui.sumNext.textContent = nextDay === 0 ? `Tap for ${next} · Week ${game.week + 1}` : `Tap for ${next}`;
+  showPanel(ui.day);
+}
+
+function continueFromSummary() {
+  game.day++;
+  if (game.day >= DAY_NAMES.length) { game.day = 0; game.week++; }   // keeps going forever
+  setupDay();
+  if (tilt.enabled) calibrateTilt();
+  game.state = 'playing';
+  hideOverlay();
+}
+
+function tryStartFromOverlay() {
+  const unlocked = performance.now() - game.overShownAt > CONFIG.restartLock * 1000;
+  if (game.state === 'title') { maybeFullscreen(); startGame(); return; }
+  if (game.state === 'summary' && unlocked) { continueFromSummary(); return; }
+  if (game.state === 'over' && unlocked) startGame();
+}
+
+// Title screen: steering status + the iPhone "enable tilt" button.
+function updateSteerUI() {
+  if (!ui.tiltBtn) return;
+  const secure = window.isSecureContext;
+  ui.tiltBtn.classList.toggle('hidden', !(tilt.needsPermission && secure && !tilt.listening && !tilt.denied));
+  ui.steerMode.textContent =
+    tiltActive() ? 'Tilt steering on'
+    : tilt.needsPermission && !secure ? 'Tilt needs https: drag to steer'
+    : tilt.denied ? 'Tilt not allowed: drag to steer'
+    : isTouchDevice ? (tilt.listening ? 'Tilt or drag to steer' : 'Drag to steer')
+    : 'Arrows steer · A/D throw';
+}
+
+ui.tiltBtn.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  await requestTilt();   // shows the iPhone motion prompt
+  if (game.state === 'title') startGame();
+});
+
+ui.overlay.addEventListener('click', (e) => {
+  if (e.target.closest('#share-btn') || e.target.closest('#tilt-btn')) return;
+  tryStartFromOverlay();
+});
+
+ui.share.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  const n = game.totalDelivered, day = DAY_NAMES[game.day];
+  const text = `I delivered ${n} paper${n === 1 ? '' : 's'} and reached ${day[0]}${day.slice(1).toLowerCase()} of week ${game.week} in Route Rush. Beat that.`;
+  const url = location.href.startsWith('http') ? location.href : '';
+  if (navigator.share) {
+    try { await navigator.share({ title: 'Route Rush', text, url: url || undefined }); return; }
+    catch (err) { if (err && err.name === 'AbortError') return; }
+  }
+  const ok = await copyText(url ? `${text} ${url}` : text);
+  ui.toast.textContent = ok ? 'Copied to clipboard!' : text;
+});
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
+  } catch (e) { /* fall through */ }
+  try {   // Fallback for plain-http LAN testing, where the Clipboard API is blocked
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch (e) { return false; }
+}
+
+function maybeFullscreen() {
+  if (!CONFIG.fullscreenOnTouch || lastPointerType !== 'touch') return;
+  const el = document.documentElement;
+  if (document.fullscreenElement || !el.requestFullscreen) return;
+  el.requestFullscreen({ navigationUI: 'hide' })
+    .then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock('portrait'))
+    .catch(() => { /* not allowed (e.g. iOS Safari): ignore */ });
+}
+
+
+// ---------------------------------------------------------------------
+// 10. LOOP
+// ---------------------------------------------------------------------
+let lastTime = performance.now();
+
+function frame(now) {
+  const dt = Math.min(0.05, Math.max(0, (now - lastTime) / 1000));   // clamp after tab switches
+  lastTime = now;
+  update(dt);
+  render(now);
+  requestAnimationFrame(frame);
+}
+
+resetGame();
+showTitle();
+requestAnimationFrame(frame);
