@@ -74,7 +74,8 @@ const CONFIG = {
   paperCarry: 0,             // fraction of the bike's forward speed a paper keeps (0 = dead straight)
   throwHeight: 12,           // height papers fly at
   throwCooldown: 0.25,       // seconds between throws (papers are unlimited)
-  paperMinLx: 20,            // a paper that hits nothing drops here (left-side x)
+  paperMinLx: -20,           // a paper that hits nothing flies until it's off the screen edge
+  paperStep: 4,              // papers move at most this far between hit checks (no skipped hits)
 
   // The street and days
   housesPerSide: 10,         // 2 x 10 = 20 houses per day
@@ -88,18 +89,24 @@ const CONFIG = {
   drivewayChance: 0.5,
   sideFenceChance: 0.35,
   propChance: 0.55,          // chance of a trash can at a house (plus maybe a fence / lawn ornament)
-  // Delivery hit areas (half-lengths along the street). Press H to see them.
+  // Hit areas. Triple-tap the score (or press H) to see them.
+  // Subscriber houses: mailbox > porch > window > rest of the property.
+  mailboxHitHalf: 8,         // mailbox, along the street (drawn mailbox is +-6, so near hits count)
+  mailboxHitHalfX: 6,        // mailbox, across the street (drawn mailbox is +-4)
   porchHitHalf: 26,          // door + porch + front steps: generous, fair at full speed
-  mailboxHalf: 6,            // mailbox: small, it's the high-value shot
   paperHalf: 4,              // a paper's own half-length; touching the porch zone counts
   windowGap: 4,              // windows start this far beyond the porch zone, so they never overlap
+  propertyMargin: 30,        // a property reaches this far into each side yard (never past halfway)
+  propertyLandLx: 90,        // a paper over a subscriber's lawn lands (and counts) at this line
+  debugTrailLife: 2.5,       // seconds a paper's path stays on the debug overlay
   introTime: 2.6,            // "MONDAY · 8 SUBSCRIBERS" banner
   bannerTime: 2.4,
   outroTime: 1.4,            // ride-out after the bonus before the summary
 
   // Scoring
-  pointsPorch: 300,
-  pointsMailbox: 700,
+  pointsPorch: 300,          // subscriber porch / door / steps
+  pointsMailbox: 700,        // subscriber mailbox
+  pointsProperty: 100,       // subscriber lawn / walkway / driveway / house front
   pointsVandalWindow: 300,   // non-subscriber window
   pointsProp: 300,           // trash can / fence / lawn ornament at a non-subscriber
   pointsBonusTarget: 300,
@@ -161,13 +168,23 @@ const CONFIG = {
   smokeMax: 2,
   skylineHeight: 92,         // River Market skyline band at the top of the screen
 
-  // Music: loops from the first run on. Button (top right) or M mutes; remembered.
+  // Sound: every effect is generated in code (see 9b. SOUND). Players set the
+  // volume, SFX on/off and music (your song / 8-bit / off) on the start and
+  // pause screens; their choices are saved.
+  masterVolume: 0.8,         // starting master volume (the slider saves the player's choice)
+  sfxVolume: 0.9,
+  musicVolume: 0.45,         // music sits under the effects
+  musicDuck: 0.25,           // music level for a moment after a crash
+  pedalVolume: 0.35,         // pedal ticks + whir (kept quiet)
+  pedalStroke: 44,           // distance ridden per pedal tick
+  pitchJitter: 0.07,         // +-7% random pitch on repeated sounds
+  comboMaxSteps: 12,         // the delivery blip climbs up to this many semitones
+  honkLead: 0.9,             // a parked car honks this many seconds before you reach it (if you're close)
+  defaultMusic: 'song',      // 'song' (musicFile), 'chip' (generated 8-bit) or 'off'
   musicFile: 'music/shit-talking.mp3',
-  musicVolume: 0.8,          // 0..1 (iPhones ignore this and use the phone's volume)
 };
 
 const BEST_KEY = 'routeRush.best';
-const MUTE_KEY = 'routeRush.musicMuted';
 const DAY_NAMES = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 
 
@@ -200,6 +217,7 @@ const THEMES = [
     smoke: 0.1,                                           // BBQ smoke puffs per smoker per second
     streetcars: 0, skyline: false,
     bonus: { jumps: { cones: 2, car: 1, fountain: 1 }, targets: { mailboxes: 3, newsstand: 1, smoker: 2 }, sideline: 'joggers', sidelineGap: 70, murals: 0 },
+    music: { bpm: 118, root: 60, scale: 'major', prog: [0, 4, 5, 3], swing: 0, seed: 11 },   // 8-bit track: key, scale, chords, tempo
   },
   {
     name: 'BROOKSIDE',                                    // Tuesday: Tudors, big fall trees, joggers
@@ -212,6 +230,7 @@ const THEMES = [
     obstacles: { jogger: 5, dog: 2, pothole: 2, car: 1, cone: 1 },
     obstacleGapScale: 1.15, smoke: 0, streetcars: 0, skyline: false,
     bonus: { jumps: { cones: 1, car: 1, fountain: 1 }, targets: { mailboxes: 3, newsstand: 1, fountain: 1 }, sideline: 'joggers', sidelineGap: 55, murals: 0 },
+    music: { bpm: 110, root: 67, scale: 'major', prog: [0, 3, 4, 0], swing: 0.05, seed: 23 },   // 8-bit track: key, scale, chords, tempo
   },
   {
     name: 'PLAZA',                                        // Wednesday: Spanish style, red tile, fountains
@@ -224,6 +243,7 @@ const THEMES = [
     obstacles: { median: 3, car: 2, skater: 2, pothole: 2, cone: 2 },
     obstacleGapScale: 1.05, smoke: 0, streetcars: 0, skyline: false,
     bonus: { jumps: { fountain: 3, cones: 1 }, targets: { fountain: 3, sign: 1, newsstand: 1 }, sideline: null, murals: 0 },
+    music: { bpm: 112, root: 62, scale: 'mixo', prog: [0, 6, 3, 0], swing: 0.08, seed: 37 },   // 8-bit track: key, scale, chords, tempo
   },
   {
     name: 'WESTPORT',                                     // Thursday: houses + storefronts, more cars
@@ -236,6 +256,7 @@ const THEMES = [
     obstacles: { car: 6, skater: 2, pothole: 2, cone: 2, dog: 1 },
     obstacleGapScale: 0.95, smoke: 0.15, streetcars: 0, skyline: false,
     bonus: { jumps: { car: 2, cones: 2 }, targets: { sign: 3, newsstand: 2, smoker: 1 }, sideline: 'patios', lights: true, murals: 0 },
+    music: { bpm: 126, root: 57, scale: 'minor', prog: [0, 5, 2, 6], swing: 0, seed: 41 },   // 8-bit track: key, scale, chords, tempo
   },
   {
     name: '18TH & VINE',                                  // Friday: brick blocks with jazz murals
@@ -253,6 +274,7 @@ const THEMES = [
     obstacles: { car: 3, pothole: 3, cone: 3, skater: 2, dog: 1 },
     obstacleGapScale: 0.9, smoke: 0.2, streetcars: 0, skyline: false,
     bonus: { jumps: { cones: 2, car: 1 }, targets: { sign: 2, smoker: 2, newsstand: 1 }, sideline: null, murals: 1 },
+    music: { bpm: 100, root: 65, scale: 'dorian', prog: [0, 3, 0, 4], swing: 0.18, seed: 53 },   // 8-bit track: key, scale, chords, tempo
   },
   {
     name: 'RIVER MARKET',                                 // Saturday: lofts, streetcar, skyline
@@ -268,6 +290,7 @@ const THEMES = [
     streetcars: 3,                                        // timed crossings on this day's route
     skyline: true, sky: ['#1e2246', '#4a3f7a', '#d07a5a'],
     bonus: { jumps: { cones: 2, car: 2 }, targets: { newsstand: 2, sign: 2, mailboxes: 1 }, sideline: null, tracks: 2, murals: 0.2 },
+    music: { bpm: 132, root: 64, scale: 'minor', prog: [0, 6, 5, 6], swing: 0, seed: 67 },   // 8-bit track: key, scale, chords, tempo
   },
   {
     name: 'GAME DAY',                                     // Sunday: red & gold, tailgates, hardest
@@ -280,6 +303,7 @@ const THEMES = [
     obstacles: { fan: 5, car: 3, cone: 2, pothole: 2, dog: 1 },
     obstacleGapScale: 0.72, smoke: 0.25, streetcars: 0, skyline: false,
     bonus: { jumps: { car: 2, cones: 2 }, targets: { smoker: 3, mailboxes: 1, sign: 1 }, sideline: 'crowd', sidelineGap: 60, murals: 0 },
+    music: { bpm: 140, root: 62, scale: 'major', prog: [0, 3, 4, 4], swing: 0, seed: 79 },   // 8-bit track: key, scale, chords, tempo
   },
 ];
 function theme() { return THEMES[game.day] || THEMES[0]; }
@@ -354,7 +378,7 @@ const COLORS = {
   carGlass: '#2a3b52', tail: '#ff4b4b',
   trash: '#5f7f6a', garbage: ['#c9b458', '#8a6a4a', '#e0e0e0'], fence: '#f4efe2',
   ramp: '#e8a33d', rampStripe: '#2b2b35', barrier: '#f4f1ea', barrierStripe: '#d64545',
-  perfect: '#ffd23f', good: '#3ddc84', bad: '#ff5a5f', neutral: '#ffffff', glass: '#9fd3f0',
+  perfect: '#ffd23f', good: '#3ddc84', bad: '#ff5a5f', neutral: '#ffffff', glass: '#9fd3f0', debugProperty: '#4fa3ff',
   stone: '#b9ab8f', limestone: '#d8cfb8', water: '#4f9fd8', waterLight: '#bfe6ff',
   smoke: '#d9d6d0', smokeDark: '#b9b5ae', skyline: '#1d2033',
   rail: '#9aa0a8', tie: '#5a4130', streetcar: '#e9ecef', streetcarAccent: '#2a6f97',
@@ -446,7 +470,7 @@ function sy(z) { return view.bikeY - (z - view.camZ); }
 const game = { state: 'title' };
 const bike = { x: 200, vx: 0, spin: 0, crashed: false, airT: 0, h: 0, invuln: 0 };
 const input = { steerTarget: 200, left: false, right: false };
-const debug = { hitAreas: false };   // H toggles hit-area outlines
+const debug = { hitAreas: false, taps: [] };   // triple-tap the score (or H) toggles hit-area outlines
 let best = parseInt(storage.get(BEST_KEY, '0'), 10) || 0;
 
 function resetGame() {
@@ -459,7 +483,8 @@ function resetGame() {
 }
 
 function startGame() {
-  playMusic();   // runs inside the tap/keypress that starts the run, so phones allow it
+  if (audio.settings.music !== 'off') startMusic();   // inside the tap that starts the run, so phones allow it
+  sfx.dayStart();
   resetGame();
   if (tilt.enabled) calibrateTilt();   // "level" = how the phone is held right now
   game.state = 'playing';
@@ -473,7 +498,7 @@ function setupDay() {
     throwCooldown: 0,
     shake: 0, flash: 0, flashColor: COLORS.bad, crashTimer: 0, crashOutcome: '', crashReason: '',
     warnedObstacles: false, banners: [],
-    houses: [], decor: [], obstacles: [], ramps: [], targets: [], lines: [], tracks: [], smokes: [], driveways: [], lights: [],
+    houses: [], decor: [], obstacles: [], ramps: [], targets: [], lines: [], tracks: [], smokes: [], driveways: [], lights: [], trails: [], queuedThrow: 0, combo: 0, pedalPhase: 0,
     flying: [], groundPapers: [], particles: [], pops: [],
     stats: {
       subs: 0, deliveries: 0, mailbox: 0, windows: 0, subWindows: 0, props: 0, targets: 0,
@@ -516,12 +541,16 @@ function crash(o) {
     game.bonus.clean = false;
     game.crashOutcome = 'bonusEnd';
     popText('BONUS OVER', bike.x, game.dist + 40, COLORS.bad, 26);
+    sfx.crash(false);
+    duckMusic();
     return;
   }
   game.lives--;
   game.crashReason = CRASH_REASONS[o.type] || 'Wipeout!';
   game.crashOutcome = game.lives > 0 ? 'respawn' : 'over';
   popText(game.lives > 0 ? `CRASH! ${game.lives} LEFT` : 'CRASH!', bike.x, game.dist + 40, COLORS.bad, 26);
+  sfx.crash(game.crashOutcome === 'over');
+  duckMusic();
 }
 
 function afterCrash() {
@@ -614,11 +643,23 @@ function toLogicalX(clientX) {
   const rect = canvas.getBoundingClientRect();
   return (clientX - rect.left - view.offX) / view.scale;
 }
+function toLogicalY(clientY) {
+  const rect = canvas.getBoundingClientRect();
+  return (clientY - rect.top - view.offY) / view.scale;
+}
+// Three quick taps on the score toggle the hit-area debug view (works on phones).
+function scoreTap() {
+  const now = performance.now();
+  debug.taps = debug.taps.filter((t) => now - t < 700);
+  debug.taps.push(now);
+  if (debug.taps.length >= 3) { debug.taps = []; debug.hitAreas = !debug.hitAreas; game.trails = []; }
+}
 
 canvas.addEventListener('pointerdown', (e) => {
   if (game.state !== 'playing') return;
   if (e.pointerType === 'mouse' && e.button !== 0) return;
   e.preventDefault();
+  if (toLogicalX(e.clientX) < 150 && toLogicalY(e.clientY) < view.safeTop + 62) { scoreTap(); return; }   // score corner never throws
   if (tiltActive()) {
     throwPaper(toLogicalX(e.clientX) < view.W / 2 ? -1 : 1);
     return;
@@ -672,7 +713,8 @@ window.addEventListener('keydown', (e) => {
   else if (KEYS_RIGHT.includes(e.code)) { input.right = true; e.preventDefault(); }
   if (e.repeat) return;
   if (e.code === 'KeyH') { debug.hitAreas = !debug.hitAreas; return; }
-  if (e.code === 'KeyM') { toggleMute(); return; }
+  if (e.code === 'KeyM') { cycleMusic(); return; }
+  if (e.code === 'KeyP' || e.code === 'Escape') { if (game.state === 'playing') pauseGame(); else resumeGame(); return; }
   if (KEYS_THROW_LEFT.includes(e.code)) throwPaper(-1);
   else if (KEYS_THROW_RIGHT.includes(e.code)) throwPaper(1);
   else if (e.code === 'Space' || e.code === 'Enter') {
@@ -741,6 +783,7 @@ function layoutDay() {
     });
   }
   game.routeEndZ = end + 40;
+  setPropertyBounds();
   addTrees(-view.H, z0 - 40);
 
   for (let k = 1; k <= th.streetcars; k++) addStreetcar(z0 + (end - z0) * k / (th.streetcars + 1));
@@ -750,6 +793,20 @@ function layoutDay() {
   const bz0 = game.routeEndZ + CONFIG.bonusGap;
   const bonusSpeed = speedFor(game.day, CONFIG.housesPerSide * 2);
   buildBonus(bz0, bz0 + CONFIG.bonusDuration * bonusSpeed);
+}
+
+// Each lot reaches propertyMargin into its side yards, but never past the
+// halfway point to the neighbor, so two properties never overlap.
+function setPropertyBounds() {
+  for (const side of [-1, 1]) {
+    const hs = game.houses.filter((h) => h.side === side && !h.scenery).sort((a, b) => a.z - b.z);
+    hs.forEach((h, i) => {
+      const before = i > 0 ? (h.z - (hs[i - 1].z + hs[i - 1].len)) / 2 : CONFIG.propertyMargin;
+      const after = i < hs.length - 1 ? (hs[i + 1].z - (h.z + h.len)) / 2 : CONFIG.propertyMargin;
+      h.propZ0 = h.z - Math.min(CONFIG.propertyMargin, before);
+      h.propZ1 = h.z + h.len + Math.min(CONFIG.propertyMargin, after);
+    });
+  }
 }
 
 // Start-to-start distance for the next house at this speed.
@@ -767,8 +824,9 @@ function makeHouse(tpl, side, z, len, rng, scenery) {
   return {
     tpl, side, z, len, scenery,
     sub: !scenery && tpl.sub, newSub: !scenery && tpl.newSub,
-    delivered: false, passed: false, windows: [false, false],
+    delivered: false, passed: false, missed: false, windows: [false, false],
     mailZ: z + len * 0.22,
+    propZ0: z - CONFIG.propertyMargin, propZ1: z + len + CONFIG.propertyMargin,   // trimmed to the side yards in layoutDay
     style, seed: scenery ? (rng() * 1e9) | 0 : tpl.seed,
     wall: pickR(st.walls, rng), roof: pickR(st.roofs, rng), trim: pickR(st.trims, rng),
     lower: st.lowers ? pickR(st.lowers, rng) : null,
@@ -997,6 +1055,7 @@ function update(dt) {
 
   game.time += dt;
   game.throwCooldown = Math.max(0, game.throwCooldown - dt);
+  if (game.throwCooldown <= 0 && game.queuedThrow) throwPaper(game.queuedThrow);   // tap made during the cooldown
   bike.invuln = Math.max(0, bike.invuln - dt);
 
   // Difficulty + forward motion
@@ -1004,9 +1063,12 @@ function update(dt) {
   if (level > game.level) {
     game.level = level;
     popText('FASTER!', view.W / 2, game.dist + 200, COLORS.neutral, 22);
+    sfx.faster();
   }
   game.speed = damp(game.speed, targetSpeed(), CONFIG.speedEase, dt);
   game.dist += game.speed * dt;
+  const stroke = Math.floor(game.dist / CONFIG.pedalStroke);
+  if (stroke !== game.pedalPhase) { game.pedalPhase = stroke; if (bike.airT <= 0) sfx.pedalTick(game.speed); }
 
   // Steering
   if (tilt.enabled) tilt.smooth = damp(tilt.smooth, tilt.raw, CONFIG.tiltSmoothing, dt);
@@ -1024,6 +1086,7 @@ function update(dt) {
     if (bike.airT <= 0) {
       bike.airT = 0; bike.h = 0;
       burst(bike.x, game.dist, COLORS.sidewalk, 8, 70);
+      sfx.land();
     } else {
       bike.h = Math.sin(Math.PI * (1 - bike.airT / CONFIG.jumpTime)) * CONFIG.jumpHeight;
     }
@@ -1033,6 +1096,7 @@ function update(dt) {
       r.used = true;
       bike.airT = CONFIG.jumpTime;
       popText('AIR!', bike.x, game.dist + 60, COLORS.perfect, 22);
+      sfx.boing();
     }
   }
 
@@ -1043,7 +1107,7 @@ function update(dt) {
   // Obstacles
   for (const o of game.obstacles) {
     if (o.type === 'dog' || o.type === 'fan') {
-      if (!o.active && (o.z - game.dist) / game.speed < o.lead) o.active = true;
+      if (!o.active && (o.z - game.dist) / game.speed < o.lead) { o.active = true; if (o.type === 'dog') sfx.bark(); }
       if (o.active) { o.x += o.dir * o.speed * dt; o.anim += dt * 16; }
     } else if (o.type === 'skater') {
       o.z += CONFIG.skaterSpeed * dt;
@@ -1052,6 +1116,10 @@ function update(dt) {
       o.z -= CONFIG.joggerSpeed * dt;
       o.anim += dt * 8;
       o.x = o.baseX + Math.sin(o.phase + game.time * 1.3) * 10;
+    } else if (o.type === 'car' && !o.cross && !o.honked && o.z > game.dist &&
+               (o.z - game.dist) / game.speed < CONFIG.honkLead && Math.abs(o.x - bike.x) < 60) {
+      o.honked = true;   // honks as you come up on it
+      sfx.honk();
     } else if (o.type === 'streetcar') {
       updateStreetcar(o, dt);
     }
@@ -1065,16 +1133,29 @@ function update(dt) {
 
   updateSmoke(dt);
 
-  // Houses we've ridden past (a missed subscriber just means no points)
+  // Houses we've ridden past (drives the speed-ups)
   for (const h of game.houses) {
     if (h.scenery || h.passed || h.z + h.len > game.dist) continue;
     h.passed = true;
     game.housesPassedToday++;
-    if (h.sub && !h.delivered) popText('MISSED', sideX(h.side, 80), h.mailZ, COLORS.neutral, 16);
+  }
+  // MISSED only once a subscriber house is completely off the bottom of the
+  // screen and no paper is still flying toward it (a missed subscriber just
+  // means no points).
+  for (const h of game.houses) {
+    if (!h.sub || h.delivered || h.missed || !h.passed) continue;
+    const st = HOUSE_STYLES[h.style], top = h.wallH + (st.roof === 'flat' ? 6 : st.roofH);
+    const screenY = view.bikeY - (h.propZ1 - game.dist) - top * CONFIG.heightY;   // top of the house, on screen
+    if (screenY < view.H) continue;
+    if (game.flying.some((p) => p.side === h.side && p.z >= h.propZ0 && p.z <= h.propZ1)) continue;
+    h.missed = true;
+    popText('MISSED', sideX(h.side, 80), game.dist + view.bikeY - (view.H - 70), COLORS.neutral, 16);
+    sfx.missed();
+    game.combo = 0;
   }
 
   // Day phases
-  if (game.phase === 'route' && game.dist > game.routeEndZ) finishRoute();
+  if (game.phase === 'route' && game.dist > game.routeEndZ && !game.flying.length) finishRoute();   // let the last papers land first
   else if (game.phase === 'bonus' && game.dist > game.bonus.z1) finishBonus();
   else if (game.phase === 'outro' && (game.phaseTimer -= dt) <= 0) { showDaySummary(); return; }
 
@@ -1086,11 +1167,13 @@ function updateStreetcar(o, dt) {
   const tta = (o.z - game.dist) / Math.max(game.speed, 1);
   if (!o.warned && tta < CONFIG.streetcarLead + CONFIG.streetcarWarn) {
     o.warned = true;
+    sfx.streetcarBell();
     popText('DING DING!', view.W / 2, game.dist + 260, COLORS.perfect, 24);
   }
   if (!o.active && tta < CONFIG.streetcarLead) {
     o.active = true;
     o.vx = (o.arriveX - o.x) / CONFIG.streetcarLead;
+    sfx.streetcarBell();
   }
   if (o.active) o.x += o.vx * dt;
 }
@@ -1128,6 +1211,7 @@ function finishRoute() {
     game.score += s.perfectBonus;
     pushBanner('PERFECT DELIVERY!', `DAY POINTS x${CONFIG.perfectMultiplier}  +${s.perfectBonus}`, COLORS.perfect, CONFIG.bannerTime + 0.6);
     celebrate();
+    sfx.perfect();
   }
   pushBanner('BONUS COURSE!', 'HIT TARGETS · JUMP RAMPS', COLORS.good, CONFIG.bannerTime);
 }
@@ -1137,6 +1221,7 @@ function finishBonus() {
   if (game.bonus.clean) {
     addPoints(CONFIG.pointsBonusClear);
     popText(`+${CONFIG.pointsBonusClear} COURSE CLEAR!`, view.W / 2, game.dist + 140, COLORS.perfect, 24);
+    sfx.clear();
     celebrate();
   }
   game.phase = 'outro';
@@ -1164,6 +1249,7 @@ function updateFx(dt) {
   game.particles = game.particles.filter((p) => p.life > 0);
   for (const p of game.pops) { p.y -= 38 * dt; p.life -= dt; }
   game.pops = game.pops.filter((p) => p.life > 0);
+  if (game.trails) { for (const tr of game.trails) tr.life -= dt; game.trails = game.trails.filter((tr) => tr.life > 0); }
 }
 
 // Houses are kept all day (only 20); everything else is dropped once behind.
@@ -1182,73 +1268,141 @@ function overlapsBike(o, forgiveness) {
 }
 
 // --- Throwing ---
-// A paper travels in left-side coordinates (lx shrinks as it flies outward).
+// A paper is a point travelling in left-side coordinates (lx shrinks as it
+// flies outward) at a fixed height. It keeps flying until it hits something
+// or leaves the screen; nothing is decided at throw time.
+// A tap during the cooldown is remembered and thrown as soon as it ends, so
+// quick taps are never silently dropped.
 function throwPaper(side) {
-  if (game.state !== 'playing' || game.throwCooldown > 0) return;
+  if (game.state !== 'playing') return;
+  if (game.throwCooldown > 0) { game.queuedThrow = side; return; }
   game.throwCooldown = CONFIG.throwCooldown;
+  game.queuedThrow = 0;
+  sfx.throw();
   const x = bike.x + side * 8;
-  game.flying.push({
+  const p = {
     side, lx: side < 0 ? x : view.W - x, z: game.dist, vz: game.speed * CONFIG.paperCarry,
-    h: CONFIG.throwHeight + bike.h, rot: 0, spin: side * rand(14, 20), done: false,
-  });
+    h: CONFIG.throwHeight + bike.h, rot: 0, spin: side * rand(14, 20), done: false, trail: [],
+  };
+  p.trail.push([p.lx, p.z]);
+  game.flying.push(p);
 }
 
+// Moves the paper in sub-steps of at most CONFIG.paperStep units and sweeps
+// each step against every hitbox, so nothing is skipped at low frame rates.
 function updatePaper(p, dt) {
-  const prev = p.lx;
-  p.lx -= CONFIG.throwSpeed * dt;
-  p.z += p.vz * dt;
   p.rot += p.spin * dt;
   if (p.h > CONFIG.throwHeight) p.h = Math.max(CONFIG.throwHeight, p.h - 80 * dt);   // thrown mid-jump
-  const hit = paperHit(p, prev);
-  if (hit) {
-    applyPaperHit(p, hit);
-    p.done = true;
-  } else if (p.lx < CONFIG.paperMinLx) {
-    dropPaper(p, p.lx);
-    burst(sideX(p.side, p.lx), p.z, '#d9d3c3', 5, 50);
-    p.done = true;
+  const dx = CONFIG.throwSpeed * dt, dz = p.vz * dt;
+  const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) / CONFIG.paperStep));
+  for (let i = 0; i < steps; i++) {
+    const a = [p.lx, p.z];
+    p.lx -= dx / steps;
+    p.z += dz / steps;
+    const hit = paperHit(p, a);
+    if (hit) {
+      p.lx = hit.lx; p.z = hit.z;
+      p.trail.push([p.lx, p.z]);
+      applyPaperHit(p, hit);
+      endPaper(p, hit.type);
+      return;
+    }
   }
+  p.trail.push([p.lx, p.z]);
+  if (p.lx < CONFIG.paperMinLx) endPaper(p, 'miss');   // flew off the edge of the screen
 }
 
-// First thing the paper reaches this frame (largest contact lx in [p.lx, prev]).
-function paperHit(p, prev) {
+// Keep the paper's path around briefly for the debug overlay.
+function endPaper(p, outcome) {
+  p.done = true;
+  if (debug.hitAreas) game.trails.push({ side: p.side, pts: p.trail, outcome, life: CONFIG.debugTrailLife });
+}
+
+// Segment (a -> b) vs box [x0,x1] x [z0,z1] in left-side coords.
+// Returns the entry fraction 0..1, or -1 if the segment misses the box.
+function sweepBox(a, b, x0, x1, z0, z1) {
+  let t0 = 0, t1 = 1;
+  const d = [b[0] - a[0], b[1] - a[1]], lo = [x0, z0], hi = [x1, z1];
+  for (let k = 0; k < 2; k++) {
+    if (Math.abs(d[k]) < 1e-9) {
+      if (a[k] < lo[k] || a[k] > hi[k]) return -1;
+    } else {
+      let ta = (lo[k] - a[k]) / d[k], tb = (hi[k] - a[k]) / d[k];
+      if (ta > tb) [ta, tb] = [tb, ta];
+      t0 = Math.max(t0, ta); t1 = Math.min(t1, tb);
+      if (t0 > t1) return -1;
+    }
+  }
+  return t0;
+}
+
+// What the paper runs into on this step (a -> current position), earliest
+// first. Subscriber houses use tiered zones: at any spot along the street
+// exactly one of mailbox > porch > window > property applies.
+function paperHit(p, a) {
+  const b = [p.lx, p.z];
   let hit = null;
-  const consider = (contact, info) => {
-    if (contact <= prev && contact >= p.lx && (!hit || contact > hit.contact)) hit = { contact, ...info };
+  const test = (x0, x1, z0, z1, info) => {
+    const t = sweepBox(a, b, x0, x1, z0, z1);
+    if (t >= 0 && (!hit || t < hit.t)) hit = { t, lx: lerp(a[0], b[0], t), z: lerp(a[1], b[1], t), ...info };
   };
+  const FAR = -1000;   // "from this line inward": a box reaching to the back of the lot
   for (const t of game.targets) {
-    if (t.side === p.side && !t.hit && Math.abs(p.z - t.z) <= CONFIG.targetHalf) consider(t.lx + 4, { type: 'target', t });
+    if (t.side === p.side && !t.hit) test(t.lx - 6, t.lx + 4, t.z - CONFIG.targetHalf, t.z + CONFIG.targetHalf, { type: 'target', t });
   }
   for (const h of game.houses) {
-    if (h.side !== p.side || p.z < h.z - 30 || p.z > h.z + h.len + 30) continue;
-    if (h.scenery) {   // bonus-course buildings just stop the paper
-      if (p.z >= h.z && p.z <= h.z + h.len) consider(L.wallX, { type: 'thud', h });
+    if (h.side !== p.side || p.z < h.propZ0 - 40 || p.z > h.propZ1 + 40) continue;
+    if (h.scenery) { test(FAR, L.wallX, h.z, h.z + h.len, { type: 'thud', h }); continue; }
+    if (h.sub) {
+      const zone = subZoneAt(h, (a[1] + b[1]) / 2);
+      if (zone) test(zone.x0, zone.x1, zone.z0, zone.z1, { type: zone.type, h, idx: zone.idx });
       continue;
     }
+    // Non-subscribers: props, mailbox, porch and walls in the order the paper meets them.
+    const zn = hitZones(h);
     for (const pr of h.props) {
-      if (!pr.knocked && Math.abs(p.z - pr.z) <= pr.hz + 3) consider(pr.lx + pr.hw, { type: 'prop', h, pr });
+      if (!pr.knocked) test(pr.lx - pr.hw, pr.lx + pr.hw, pr.z - pr.hz - 3, pr.z + pr.hz + 3, { type: 'prop', h, pr });
     }
-    if (Math.abs(p.z - h.mailZ) <= CONFIG.mailboxHalf) consider(L.mailboxX + 4, { type: 'mailbox', h });
-    if (p.z >= h.z && p.z <= h.z + h.len) {
-      const zn = hitZones(h);
-      if (p.z >= zn.porch[0] && p.z <= zn.porch[1]) consider(L.stepsX, { type: 'porch', h });   // door/porch wins
-      else consider(L.wallX, { type: 'wall', h });
-    }
+    test(zn.mailboxX[0], zn.mailboxX[1], zn.mailbox[0], zn.mailbox[1], { type: 'mailbox', h });
+    test(FAR, L.stepsX, zn.porch[0], zn.porch[1], { type: 'porch', h });
+    test(FAR, L.wallX, h.z, zn.porch[0], { type: 'wall', h });
+    test(FAR, L.wallX, zn.porch[1], h.z + h.len, { type: 'wall', h });
   }
   return hit;
 }
 
+// The single delivery zone of a subscriber house at street position z
+// (or null outside its property), with the box the paper must reach.
+function subZoneAt(h, z) {
+  const zn = hitZones(h), FAR = -1000;
+  if (z < zn.property[0] || z > zn.property[1]) return null;
+  if (z >= zn.mailbox[0] && z <= zn.mailbox[1]) {
+    return { type: 'mailbox', x0: zn.mailboxX[0], x1: zn.mailboxX[1], z0: zn.mailbox[0], z1: zn.mailbox[1] };
+  }
+  if (z >= zn.porch[0] && z <= zn.porch[1]) return { type: 'porch', x0: FAR, x1: L.stepsX, z0: zn.porch[0], z1: zn.porch[1] };
+  const idx = zn.windows.findIndex(([lo, hi]) => z >= lo && z <= hi);
+  if (idx >= 0 && !h.windows[idx]) {
+    return { type: 'window', idx, x0: FAR, x1: L.wallX + 2, z0: zn.windows[idx][0], z1: zn.windows[idx][1] };
+  }
+  // Everything else on the lot: the house front, or the lawn / walkway / driveway.
+  const onHouse = z >= h.z && z <= h.z + h.len;
+  const front = onHouse ? L.wallX : CONFIG.propertyLandLx;
+  const [z0, z1] = onHouse ? [h.z, h.z + h.len] : z < h.z ? [zn.property[0], h.z] : [h.z + h.len, zn.property[1]];
+  return { type: 'property', x0: FAR, x1: front, z0, z1 };
+}
+
 function applyPaperHit(p, hit) {
-  const x = sideX(p.side, hit.contact), z = p.z, h = hit.h, s = game.stats;
+  const x = sideX(p.side, hit.lx), z = hit.z, h = hit.h, s = game.stats;
   switch (hit.type) {
     case 'target':
       hit.t.hit = true;
       s.targets++;
+      sfx.ping();
       addPoints(CONFIG.pointsBonusTarget);
       popText(`+${CONFIG.pointsBonusTarget}`, x, z, COLORS.perfect, 24);
       burst(x, z, { fountain: COLORS.waterLight, smoker: COLORS.smoke, newsstand: COLORS.paper }[hit.t.kind] || COLORS.bad, 12, 130);
       burst(x, z, '#ffffff', 8, 110);
-      dropPaper(p, hit.contact + 6);
+      dropPaper(p, hit.lx + 6);
       break;
 
     case 'thud':
@@ -1256,77 +1410,98 @@ function applyPaperHit(p, hit) {
       dropPaper(p, L.wallX + 8);
       break;
 
-    case 'prop':
+    case 'prop':   // non-subscriber yard stuff
       hit.pr.knocked = true;
       burst(x, z, hit.pr.type === 'trash' ? pick(COLORS.garbage) : COLORS.fence, 10, 120);
-      if (!h.sub) {
-        s.props++;
-        addPoints(CONFIG.pointsProp);
-        popText(`+${CONFIG.pointsProp} BAM!`, x, z, COLORS.good, 22);
-      } else {
-        popText('OOPS', x, z, COLORS.neutral, 16);
-      }
-      dropPaper(p, hit.contact + 4);
+      s.props++;
+      sfx.clatter();
+      addPoints(CONFIG.pointsProp);
+      popText(`+${CONFIG.pointsProp} BAM!`, x, z, COLORS.good, 22);
+      dropPaper(p, hit.lx + 4);
       break;
 
     case 'mailbox':
-      if (canDeliver(h)) {
-        deliver(h);
-        s.mailbox++;
-        addPoints(CONFIG.pointsMailbox);
-        popText(`+${CONFIG.pointsMailbox} MAILBOX!`, x, z, COLORS.perfect, 26);
-        burst(x, z, COLORS.perfect, CONFIG.particleCount + 6, 150);
-        game.shake = Math.max(game.shake, CONFIG.shakeMailbox);
-        return;   // it's in the mailbox, nothing left on the lawn
-      }
-      popText('THUNK', x, z, COLORS.neutral, 14);
-      dropPaper(p, hit.contact + 4);
+      if (h.sub) { if (deliverTo(h, 'mailbox', x, z)) return; }   // it's in the mailbox: nothing left on the lawn
+      else popText('THUNK', x, z, COLORS.neutral, 14);
+      dropPaper(p, hit.lx + 4);
       break;
 
     case 'porch':
-      if (canDeliver(h)) {
-        deliver(h);
-        addPoints(CONFIG.pointsPorch);
-        popText(`+${CONFIG.pointsPorch} DELIVERED`, x, z, COLORS.good, 24);
-        burst(x, z, COLORS.good, CONFIG.particleCount, 110);
-      }
+      if (h.sub) deliverTo(h, 'porch', x, z);
       dropPaper(p, L.porchX1 - 6);
       break;
 
-    case 'wall': {
+    case 'property':
+      deliverTo(h, 'property', x, z);
+      dropPaper(p, hit.lx + 2);
+      break;
+
+    case 'window':   // subscriber window: breaks, no points, no Perfect Day today
+      breakWindow(h, hit.idx, x, z);
+      dropPaper(p, L.wallX + 8);
+      break;
+
+    case 'wall': {   // non-subscriber wall: windows are fair game
       const idx = hitZones(h).windows.findIndex(([lo, hi]) => z >= lo && z <= hi);
-      if (idx >= 0 && !h.windows[idx]) {
-        h.windows[idx] = true;
-        s.windows++;
-        burst(x, z, COLORS.glass, CONFIG.particleCount + 6, 170);
-        burst(x, z, '#ffffff', 6, 140);
-        game.shake = Math.max(game.shake, CONFIG.shakeWindow);
-        if (h.sub) {   // no points, and no Perfect Day today
-          s.subWindows++;
-          popText('OOPS! SUBSCRIBER', x, z, COLORS.bad, 20);
-          game.flash = 0.3; game.flashColor = COLORS.bad;
-        } else {
-          addPoints(CONFIG.pointsVandalWindow);
-          popText(`+${CONFIG.pointsVandalWindow} CRASH!`, x, z, COLORS.glass, 22);
-        }
-      }
+      if (idx >= 0 && !h.windows[idx]) breakWindow(h, idx, x, z);
       dropPaper(p, L.wallX + 8);
       break;
     }
   }
 }
 
-// Where a house's delivery targets are, along the street (z). Used by hit
-// detection, window drawing and the H debug overlay so they always agree.
+const DELIVERY = {
+  mailbox: { points: () => CONFIG.pointsMailbox, label: 'MAILBOX!', color: COLORS.perfect, size: 26 },
+  porch: { points: () => CONFIG.pointsPorch, label: 'PORCH!', color: COLORS.good, size: 24 },
+  property: { points: () => CONFIG.pointsProperty, label: 'DELIVERED', color: COLORS.neutral, size: 20 },
+};
+
+// Returns true if this paper delivered (first paper to the house only).
+function deliverTo(h, kind, x, z) {
+  if (h.delivered) { popText('GOT ONE ALREADY', x, z, COLORS.neutral, 14); return false; }
+  const d = DELIVERY[kind];
+  deliver(h);
+  addPoints(d.points());
+  sfx[kind](game.combo++);   // success blip climbs with each delivery in a row
+  popText(`+${d.points()} ${d.label}`, x, z, d.color, d.size);
+  burst(x, z, d.color, CONFIG.particleCount + (kind === 'mailbox' ? 6 : 0), kind === 'mailbox' ? 150 : 110);
+  if (kind === 'mailbox') { game.stats.mailbox++; game.shake = Math.max(game.shake, CONFIG.shakeMailbox); }
+  return true;
+}
+
+function breakWindow(h, idx, x, z) {
+  const s = game.stats;
+  h.windows[idx] = true;
+  s.windows++;
+  sfx.glass();
+  burst(x, z, COLORS.glass, CONFIG.particleCount + 6, 170);
+  burst(x, z, '#ffffff', 6, 140);
+  game.shake = Math.max(game.shake, CONFIG.shakeWindow);
+  if (h.sub) {
+    s.subWindows++;
+    game.combo = 0;
+    popText('OOPS! SUBSCRIBER', x, z, COLORS.bad, 20);
+    game.flash = 0.3; game.flashColor = COLORS.bad;
+  } else {
+    addPoints(CONFIG.pointsVandalWindow);
+    popText(`+${CONFIG.pointsVandalWindow} CRASH!`, x, z, COLORS.glass, 22);
+  }
+}
+
+// Where a house's hit areas are: along the street (z) and, for the mailbox,
+// across it (lx). Used by hit detection, window drawing and the debug
+// overlay so they always agree.
 function hitZones(h) {
   const cz = h.z + h.len / 2;
-  const porch = CONFIG.porchHitHalf + CONFIG.paperHalf;   // door/porch zone (paper touching it counts)
+  const porch = CONFIG.porchHitHalf + CONFIG.paperHalf;   // door/porch/steps (paper touching it counts)
   const winNear = porch + CONFIG.windowGap, winFar = h.len / 2 - 6;
   return {
     cz,
     porch: [cz - porch, cz + porch],
-    mailbox: [h.mailZ - CONFIG.mailboxHalf, h.mailZ + CONFIG.mailboxHalf],
+    mailbox: [h.mailZ - CONFIG.mailboxHitHalf, h.mailZ + CONFIG.mailboxHitHalf],
+    mailboxX: [L.mailboxX - CONFIG.mailboxHitHalfX, L.mailboxX + CONFIG.mailboxHitHalfX],
     windows: winFar > winNear ? [[cz - winFar, cz - winNear], [cz + winNear, cz + winFar]] : [],
+    property: [h.propZ0, h.propZ1],
   };
 }
 
@@ -2700,21 +2875,41 @@ function drawParticles() {
   pix.globalAlpha = 1;
 }
 
-// Debug (H): outline every house's hit areas at paper height.
-// green = door/porch/steps, gold = mailbox, red = windows. The outline spans
-// from where the paper makes contact back to the wall it would hit.
+// Debug overlay (triple-tap the score, or H): every hitbox at paper height,
+// plus the path of each paper. gold = mailbox, green = porch, blue = rest of
+// a subscriber's property, red = windows, white = props / bonus targets.
 function drawHitAreas() {
-  const hgt = CONFIG.throwHeight;
+  const hgt = CONFIG.throwHeight, FRONT = L.sidewalkX0;
   const outline = (side, lx0, lx1, z0, z1, color) => {
     const c = [[lx0, z0], [lx1, z0], [lx1, z1], [lx0, z1]].map(([lx, z]) => proj(sideX(side, lx), z, hgt));
     for (let i = 0; i < 4; i++) lineL(c[i], c[(i + 1) % 4], color);
   };
   for (const h of game.houses) {
-    if (h.scenery || sy(h.z) < -40 || sy(h.z + h.len) > view.H + 40) continue;
+    if (h.scenery || sy(h.propZ0) < -40 || sy(h.propZ1) > view.H + 40) continue;
     const zn = hitZones(h);
+    if (h.sub) outline(h.side, 4, FRONT, zn.property[0], zn.property[1], COLORS.debugProperty);
     outline(h.side, L.wallX, L.stepsX, zn.porch[0], zn.porch[1], COLORS.good);
-    outline(h.side, L.mailboxX - 4, L.mailboxX + 4, zn.mailbox[0], zn.mailbox[1], COLORS.perfect);
-    for (const [lo, hi] of zn.windows) outline(h.side, L.wallX - 2, L.wallX + 2, lo, hi, COLORS.bad);
+    zn.windows.forEach(([lo, hi]) => outline(h.side, L.wallX - 3, L.wallX + 2, lo, hi, COLORS.bad));
+    outline(h.side, zn.mailboxX[0], zn.mailboxX[1], zn.mailbox[0], zn.mailbox[1], COLORS.perfect);
+    if (!h.sub) for (const pr of h.props) if (!pr.knocked) outline(h.side, pr.lx - pr.hw, pr.lx + pr.hw, pr.z - pr.hz - 3, pr.z + pr.hz + 3, '#ffffff');
+  }
+  for (const t of game.targets) if (!t.hit) outline(t.side, t.lx - 6, t.lx + 4, t.z - CONFIG.targetHalf, t.z + CONFIG.targetHalf, '#ffffff');
+
+  // Paper paths: live papers in white, finished ones end in their outcome color.
+  const OUTCOME = { mailbox: COLORS.perfect, porch: COLORS.good, property: COLORS.debugProperty, window: COLORS.bad, wall: COLORS.bad };
+  const path = (side, pts, color) => {
+    for (let i = 1; i < pts.length; i++) {
+      lineL(proj(sideX(side, pts[i - 1][0]), pts[i - 1][1], hgt), proj(sideX(side, pts[i][0]), pts[i][1], hgt), color);
+    }
+  };
+  for (const p of game.flying) path(p.side, p.trail, '#ffffff');
+  for (const tr of game.trails) {
+    const col = OUTCOME[tr.outcome] || '#9aa0a8';
+    path(tr.side, tr.pts, col);
+    const [ex, ez] = tr.pts[tr.pts.length - 1];
+    const [cx, cy] = proj(sideX(tr.side, ex), ez, hgt);
+    lineL([cx - 4, cy - 4], [cx + 4, cy + 4], col);
+    lineL([cx - 4, cy + 4], [cx + 4, cy - 4], col);
   }
 }
 
@@ -2773,10 +2968,14 @@ function drawHUD() {
     textShadowed('BONUS', view.W / 2, top + 30, COLORS.good);
   }
 
-  if (debug.hitAreas) {
+  if (debug.hitAreas) {   // label + color key
     ctx.textAlign = 'center';
     ctx.font = `8px ${FONT}`;
-    textShadowed('HIT AREAS (H)', view.W / 2, top + 52, COLORS.good);
+    textShadowed('DEBUG: TRIPLE-TAP SCORE', view.W / 2, top + 76, COLORS.good);
+    ctx.textAlign = 'left';
+    const key = [['MAILBOX', COLORS.perfect], ['PORCH', COLORS.good], ['PROPERTY', COLORS.debugProperty], ['WINDOW', COLORS.bad]];
+    let kx = 8;
+    for (const [label, col] of key) { textShadowed(label, kx, view.H - 10, col); kx += ctx.measureText(label).width + 12; }
   }
 
   // Lives (hidden when one crash ends the run)
@@ -2858,6 +3057,9 @@ const ui = {
   title: document.getElementById('screen-title'),
   over: document.getElementById('screen-over'),
   day: document.getElementById('screen-day'),
+  pause: document.getElementById('screen-pause'),
+  pauseBtn: document.getElementById('pause-btn'),
+  resumeBtn: document.getElementById('resume-btn'),
   overTitle: document.getElementById('over-title'),
   tiltBtn: document.getElementById('tilt-btn'),
   steerMode: document.getElementById('steer-mode'),
@@ -2886,7 +3088,7 @@ window.addEventListener('pointerdown', (e) => { lastPointerType = e.pointerType;
 function hideOverlay() { ui.overlay.classList.add('hidden'); }
 
 function showPanel(panel) {
-  for (const p of [ui.title, ui.over, ui.day]) p.classList.toggle('hidden', p !== panel);
+  for (const p of [ui.title, ui.over, ui.day, ui.pause]) p.classList.toggle('hidden', p !== panel);
   ui.overlay.classList.remove('hidden');
 }
 
@@ -2953,10 +3155,12 @@ function continueFromSummary() {
   if (tilt.enabled) calibrateTilt();
   game.state = 'playing';
   hideOverlay();
+  sfx.dayStart();
 }
 
 function tryStartFromOverlay() {
   const unlocked = performance.now() - game.overShownAt > CONFIG.restartLock * 1000;
+  if (game.state === 'paused') { resumeGame(); return; }
   if (game.state === 'title') { maybeFullscreen(); startGame(); return; }
   if (game.state === 'summary' && unlocked) { continueFromSummary(); return; }
   if (game.state === 'over' && unlocked) startGame();
@@ -2977,18 +3181,21 @@ function updateSteerUI() {
 
 ui.tiltBtn.addEventListener('click', async (e) => {
   e.stopPropagation();
-  playMusic();           // start audio while we still have the tap (before the prompt)
+  sfx.click();
+  if (audio.settings.music !== 'off') startMusic();   // start audio while we still have the tap
   await requestTilt();   // shows the iPhone motion prompt
   if (game.state === 'title') startGame();
 });
 
 ui.overlay.addEventListener('click', (e) => {
-  if (e.target.closest('#share-btn') || e.target.closest('#tilt-btn') || e.target.closest('#mute-btn')) return;
+  if (e.target.closest('#share-btn') || e.target.closest('#tilt-btn') || e.target.closest('.audio-row') || e.target.closest('#resume-btn')) return;
+  if (game.state === 'paused') return;   // only the Resume button unpauses
   tryStartFromOverlay();
 });
 
 ui.share.addEventListener('click', async (e) => {
   e.stopPropagation();
+  sfx.click();
   const n = game.totalDelivered, day = DAY_NAMES[game.day];
   const text = `I delivered ${n} paper${n === 1 ? '' : 's'} and reached ${day[0]}${day.slice(1).toLowerCase()} of week ${game.week} in Route Rush. Beat that.`;
   const url = location.href.startsWith('http') ? location.href : '';
@@ -3018,45 +3225,6 @@ async function copyText(text) {
   } catch (e) { return false; }
 }
 
-// --- Music ---
-// A plain <audio> element: it keeps playing with the iPhone silent switch on
-// (Web Audio would be muted), loops on its own, and pauses with the tab.
-const music = { el: null, wanted: false, muted: storage.get(MUTE_KEY, '0') === '1' };
-const muteBtn = document.getElementById('mute-btn');
-
-function playMusic() {
-  if (!music.el) {
-    music.el = new Audio(CONFIG.musicFile);
-    music.el.loop = true;
-    music.el.preload = 'auto';
-    music.el.volume = CONFIG.musicVolume;
-    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* older Safari */ }
-  }
-  music.wanted = true;
-  music.el.muted = music.muted;
-  if (!document.hidden && music.el.paused) music.el.play().catch(() => { /* blocked until a tap: retried on the next start */ });
-}
-
-function toggleMute() {
-  music.muted = !music.muted;
-  storage.set(MUTE_KEY, music.muted ? '1' : '0');
-  if (music.el) music.el.muted = music.muted;
-  if (!music.muted && music.wanted) playMusic();
-  updateMuteUI();
-}
-
-function updateMuteUI() {
-  muteBtn.classList.toggle('off', music.muted);
-  muteBtn.setAttribute('aria-label', music.muted ? 'Music off' : 'Music on');
-}
-
-muteBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleMute(); });
-document.addEventListener('visibilitychange', () => {
-  if (!music.el) return;
-  if (document.hidden) music.el.pause();
-  else if (music.wanted) playMusic();
-});
-updateMuteUI();
 
 function maybeFullscreen() {
   if (!CONFIG.fullscreenOnTouch || lastPointerType !== 'touch') return;
@@ -3069,6 +3237,369 @@ function maybeFullscreen() {
 
 
 // ---------------------------------------------------------------------
+// 9b. SOUND
+// Every effect is synthesized with the Web Audio API (no sound files): one
+// function per sound, sfx.throw(), sfx.mailbox() ... Music is either your
+// song (CONFIG.musicFile) or a generated chiptune that changes key and tempo
+// per neighborhood (THEMES[].music). One AudioContext, unlocked by the first
+// tap. Routing: sounds -> sfx bus / music bus -> master volume -> speakers.
+// ---------------------------------------------------------------------
+const AUDIO_KEY = 'routeRush.audio';
+const audio = {
+  ctx: null, master: null, sfxBus: null, musicBus: null, noise: null, voices: {},
+  settings: { volume: CONFIG.masterVolume, sfx: true, music: CONFIG.defaultMusic },   // saved
+};
+try { Object.assign(audio.settings, JSON.parse(storage.get(AUDIO_KEY, '{}'))); } catch (e) { /* bad save: defaults */ }
+function saveAudio() { storage.set(AUDIO_KEY, JSON.stringify(audio.settings)); }
+
+function unlockAudio() {
+  if (!audio.ctx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* older Safari */ }
+    const ctx = audio.ctx = new AC();
+    audio.master = ctx.createGain();
+    audio.master.connect(ctx.destination);
+    audio.sfxBus = ctx.createGain();
+    audio.sfxBus.connect(audio.master);
+    audio.musicBus = ctx.createGain();
+    audio.musicBus.connect(audio.master);
+    const buf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    audio.noise = buf;
+    applyAudioSettings();
+  }
+  if (audio.ctx.state !== 'running') audio.ctx.resume().catch(() => { /* needs a tap */ });
+}
+// iPhone only starts audio inside a tap, so try on every kind of first input.
+for (const ev of ['pointerdown', 'touchend', 'click', 'keydown']) window.addEventListener(ev, unlockAudio, true);
+
+function applyAudioSettings() {
+  const s = audio.settings;
+  if (audio.ctx) {
+    const t = audio.ctx.currentTime;
+    audio.master.gain.setTargetAtTime(s.volume, t, 0.02);
+    audio.sfxBus.gain.setTargetAtTime(s.sfx ? CONFIG.sfxVolume : 0, t, 0.02);
+    audio.musicBus.gain.setTargetAtTime(CONFIG.musicVolume, t, 0.02);
+  }
+  updateAudioUI();
+}
+
+// --- Synth helpers ---
+const NOTE = (m) => 440 * Math.pow(2, (m - 69) / 12);   // MIDI note -> Hz
+function sfxOn() { return !!audio.ctx && audio.settings.sfx; }   // a just-unlocked context may still be resuming: sounds queue up
+function jit(f) { return f * (1 + (Math.random() * 2 - 1) * CONFIG.pitchJitter); }
+// At most `max` copies of one sound at a time.
+function claim(name, max, dur) {
+  const n = audio.voices[name] || 0;
+  if (n >= max) return false;
+  audio.voices[name] = n + 1;
+  setTimeout(() => { audio.voices[name]--; }, dur * 1000 + 40);
+  return true;
+}
+// One enveloped oscillator note. o: { f, f2 (glide to), type, dur, vol, at (delay) | t0 (absolute), bus }
+function tone(o) {
+  const ctx = audio.ctx, t = o.t0 != null ? o.t0 : ctx.currentTime + (o.at || 0), d = o.dur;
+  const osc = ctx.createOscillator(), g = ctx.createGain();
+  osc.type = o.type || 'square';
+  osc.frequency.setValueAtTime(o.f, t);
+  if (o.f2) osc.frequency.exponentialRampToValueAtTime(o.f2, t + d);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(o.vol, t + (o.attack || 0.005));
+  g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+  osc.connect(g);
+  g.connect(o.bus || audio.sfxBus);
+  osc.start(t);
+  osc.stop(t + d + 0.02);
+}
+// Filtered noise burst. o: { f, f2, filter, q, dur, vol, at | t0, bus }
+function noise(o) {
+  const ctx = audio.ctx, t = o.t0 != null ? o.t0 : ctx.currentTime + (o.at || 0), d = o.dur;
+  const src = ctx.createBufferSource(), flt = ctx.createBiquadFilter(), g = ctx.createGain();
+  src.buffer = audio.noise;
+  src.loop = true;
+  flt.type = o.filter || 'bandpass';
+  flt.Q.value = o.q || 1;
+  flt.frequency.setValueAtTime(o.f, t);
+  if (o.f2) flt.frequency.exponentialRampToValueAtTime(o.f2, t + d);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(o.vol, t + (o.attack || 0.004));
+  g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+  src.connect(flt); flt.connect(g); g.connect(o.bus || audio.sfxBus);
+  src.start(t, Math.random() * 0.5);
+  src.stop(t + d + 0.02);
+}
+function notes(list, step, type, vol, at = 0) {   // quick melody: [midi, lengthInSteps?]
+  let t = at;
+  for (const n of list) {
+    const [m, len] = Array.isArray(n) ? n : [n, 1];
+    if (m) tone({ type, f: NOTE(m), dur: step * len * 0.95, vol, at: t });
+    t += step * len;
+  }
+}
+
+// --- Sound effects ---
+const sfx = {
+  throw() {
+    if (!sfxOn() || !claim('throw', 3, 0.15)) return;
+    noise({ filter: 'bandpass', f: jit(800), f2: jit(3800), q: 0.9, dur: 0.13, vol: 0.32 });
+  },
+  // Success blip that climbs a semitone per consecutive delivery.
+  blip(step, vol = 0.16) {
+    if (!sfxOn() || !claim('blip', 3, 0.16)) return;
+    const f = NOTE(76 + Math.min(step, CONFIG.comboMaxSteps));
+    tone({ type: 'square', f, dur: 0.07, vol });
+    tone({ type: 'square', f: f * 1.5, dur: 0.09, vol: vol * 0.8, at: 0.06 });
+  },
+  property(step) {   // soft thud on the lawn
+    if (!sfxOn() || !claim('thud', 3, 0.15)) return;
+    tone({ type: 'sine', f: jit(150), f2: 55, dur: 0.14, vol: 0.45 });
+    noise({ filter: 'lowpass', f: 500, dur: 0.06, vol: 0.2 });
+    this.blip(step, 0.07);
+  },
+  porch(step) {      // solid thump + blip
+    if (!sfxOn() || !claim('thump', 3, 0.15)) return;
+    tone({ type: 'sine', f: jit(130), f2: 45, dur: 0.13, vol: 0.6 });
+    tone({ type: 'triangle', f: jit(95), f2: 60, dur: 0.1, vol: 0.3 });
+    noise({ filter: 'lowpass', f: 380, dur: 0.07, vol: 0.3 });
+    this.blip(step);
+  },
+  mailbox(step) {    // metallic clang + bright rising ding: the best sound in the game
+    if (!sfxOn() || !claim('mailbox', 2, 0.6)) return;
+    const c = jit(1180);
+    tone({ type: 'square', f: c, dur: 0.28, vol: 0.12 });
+    tone({ type: 'square', f: c * 1.47, dur: 0.22, vol: 0.08 });
+    tone({ type: 'triangle', f: c * 2.03, dur: 0.18, vol: 0.1 });
+    noise({ filter: 'highpass', f: 4000, dur: 0.05, vol: 0.2 });
+    const s = Math.min(step, CONFIG.comboMaxSteps);
+    notes([84 + s, 88 + s, 91 + s, [96 + s, 3]], 0.055, 'square', 0.13, 0.07);
+    tone({ type: 'sine', f: NOTE(96 + s), dur: 0.5, vol: 0.12, at: 0.24 });
+  },
+  glass() {
+    if (!sfxOn() || !claim('glass', 2, 0.45)) return;
+    noise({ filter: 'highpass', f: 2600, dur: 0.42, vol: 0.38 });
+    for (let i = 0; i < 6; i++) tone({ type: i % 2 ? 'square' : 'sine', f: 2400 + Math.random() * 3600, dur: 0.05 + Math.random() * 0.08, vol: 0.07, at: i * 0.028 });
+  },
+  clatter() {        // trash cans, fences, lawn ornaments
+    if (!sfxOn() || !claim('clatter', 2, 0.25)) return;
+    for (const at of [0, 0.06, 0.13]) noise({ filter: 'bandpass', f: jit(1300), q: 2, dur: 0.07, vol: 0.28, at });
+    tone({ type: 'square', f: jit(190), f2: 110, dur: 0.14, vol: 0.1 });
+  },
+  missed() {         // soft "bwomp", not punishing
+    if (!sfxOn() || !claim('missed', 1, 0.3)) return;
+    tone({ type: 'sine', f: 240, f2: 110, dur: 0.3, vol: 0.14 });
+  },
+  bark() {
+    if (!sfxOn() || !claim('bark', 1, 0.3)) return;
+    for (const at of [0, 0.15]) {
+      tone({ type: 'square', f: jit(540), f2: 260, dur: 0.08, vol: 0.13, at });
+      noise({ filter: 'bandpass', f: 900, q: 3, dur: 0.08, vol: 0.22, at });
+    }
+  },
+  honk() {
+    if (!sfxOn() || !claim('honk', 1, 0.35)) return;
+    tone({ type: 'square', f: 392, dur: 0.3, vol: 0.1 });
+    tone({ type: 'square', f: 494, dur: 0.3, vol: 0.08 });
+  },
+  streetcarBell() {  // "clang clang"
+    if (!sfxOn() || !claim('bell', 1, 0.7)) return;
+    for (const at of [0, 0.3]) {
+      tone({ type: 'triangle', f: 1046, dur: 0.45, vol: 0.2, at });
+      tone({ type: 'sine', f: 2620, dur: 0.3, vol: 0.09, at });
+      tone({ type: 'square', f: 1568, dur: 0.06, vol: 0.06, at });
+    }
+  },
+  crash(gameOver) {  // skid + crunch (+ descending jingle when the run is over)
+    if (!sfxOn() || !claim('crash', 1, 1.6)) return;
+    noise({ filter: 'bandpass', f: 2600, f2: 1600, q: 6, dur: 0.24, vol: 0.25 });
+    noise({ filter: 'lowpass', f: 1100, f2: 140, dur: 0.45, vol: 0.7, at: 0.12 });
+    tone({ type: 'square', f: 95, f2: 38, dur: 0.35, vol: 0.22, at: 0.12 });
+    if (gameOver) notes([72, 67, 64, [60, 3]], 0.15, 'square', 0.12, 0.75);
+  },
+  dayStart() {       // bike bell "ding ding" + short upbeat jingle
+    if (!sfxOn() || !claim('day', 1, 1.2)) return;
+    for (const at of [0, 0.17]) { tone({ type: 'triangle', f: 2093, dur: 0.22, vol: 0.16, at }); tone({ type: 'sine', f: 3136, dur: 0.15, vol: 0.06, at }); }
+    notes([60, 64, 67, [72, 2], 0, [76, 2]], 0.09, 'square', 0.1, 0.45);
+  },
+  faster() {         // rising whoosh
+    if (!sfxOn() || !claim('faster', 1, 0.4)) return;
+    noise({ filter: 'bandpass', f: 400, f2: 3500, q: 1.2, dur: 0.35, vol: 0.22 });
+    tone({ type: 'square', f: 300, f2: 900, dur: 0.3, vol: 0.06 });
+  },
+  perfect() {        // fanfare
+    if (!sfxOn() || !claim('fanfare', 1, 1.4)) return;
+    notes([67, 72, 76, [79, 2], 76, [84, 4]], 0.11, 'square', 0.12);
+    notes([[55, 2], [60, 2], [64, 2], [60, 4]], 0.11, 'triangle', 0.18);
+  },
+  clear() {          // bonus course finished clean
+    if (!sfxOn() || !claim('fanfare', 1, 0.8)) return;
+    notes([72, 76, 79, [84, 3]], 0.09, 'square', 0.12);
+  },
+  boing() {          // ramp launch
+    if (!sfxOn() || !claim('boing', 1, 0.3)) return;
+    tone({ type: 'sine', f: 180, f2: 720, dur: 0.28, vol: 0.32 });
+    tone({ type: 'square', f: 90, f2: 360, dur: 0.24, vol: 0.06 });
+    noise({ filter: 'bandpass', f: 600, f2: 2500, dur: 0.2, vol: 0.15 });
+  },
+  land() {
+    if (!sfxOn() || !claim('land', 1, 0.2)) return;
+    tone({ type: 'sine', f: 110, f2: 45, dur: 0.15, vol: 0.5 });
+    noise({ filter: 'lowpass', f: 420, dur: 0.09, vol: 0.25 });
+  },
+  ping() {           // bonus target
+    if (!sfxOn() || !claim('ping', 2, 0.3)) return;
+    const f = jit(NOTE(88));
+    tone({ type: 'sine', f, dur: 0.25, vol: 0.25 });
+    tone({ type: 'sine', f: f * 1.5, dur: 0.2, vol: 0.12, at: 0.03 });
+  },
+  pedalTick(speed) { // one soft tick per pedal stroke
+    if (!sfxOn() || !claim('tick', 2, 0.05)) return;
+    noise({ filter: 'bandpass', f: 1500 + speed * 4, q: 5, dur: 0.03, vol: 0.12 * CONFIG.pedalVolume });
+  },
+  click() {
+    if (!sfxOn()) return;
+    tone({ type: 'square', f: 1800, dur: 0.025, vol: 0.08 });
+  },
+};
+
+// Pedal whir: one quiet looping tone that follows the bike's speed.
+const pedal = { osc: null, flt: null, gain: null };
+function updatePedalSound(on) {
+  if (!audio.ctx) return;
+  if (!pedal.osc) {
+    pedal.osc = audio.ctx.createOscillator();
+    pedal.flt = audio.ctx.createBiquadFilter();
+    pedal.gain = audio.ctx.createGain();
+    pedal.osc.type = 'triangle';
+    pedal.flt.type = 'lowpass';
+    pedal.gain.gain.value = 0;
+    pedal.osc.connect(pedal.flt); pedal.flt.connect(pedal.gain); pedal.gain.connect(audio.sfxBus);
+    pedal.osc.start();
+  }
+  const t = audio.ctx.currentTime, speed = game.speed || 0;
+  pedal.gain.gain.setTargetAtTime(on ? 0.05 * CONFIG.pedalVolume : 0, t, 0.08);
+  pedal.osc.frequency.setTargetAtTime(50 + speed * 0.12, t, 0.2);
+  pedal.flt.frequency.setTargetAtTime(250 + speed * 1.4, t, 0.2);
+}
+
+// --- Music ---
+// 'song' plays CONFIG.musicFile through the music bus (so volume and ducking
+// work on iPhone too); 'chip' plays the generated chiptune; 'off' is silence.
+const music = { el: null, chip: null, on: false };
+function startMusic() {
+  unlockAudio();
+  if (!audio.ctx) return;
+  music.on = true;
+  const mode = audio.settings.music;
+  if (mode !== 'song' && music.el) music.el.pause();
+  if (mode !== 'chip') stopChip();
+  if (mode === 'song') {
+    if (!music.el) {
+      music.el = new Audio(CONFIG.musicFile);
+      music.el.loop = true;
+      music.el.preload = 'auto';
+      audio.ctx.createMediaElementSource(music.el).connect(audio.musicBus);
+    }
+    if (!document.hidden && game.state !== 'paused') music.el.play().catch(() => { /* retried on the next tap */ });
+  } else if (mode === 'chip' && !music.chip && game.state !== 'paused') {
+    music.chip = { step: 0, next: audio.ctx.currentTime + 0.1, timer: setInterval(scheduleChip, 25) };
+  }
+}
+function pauseMusic() { if (music.el) music.el.pause(); stopChip(); }
+function stopChip() { if (music.chip) { clearInterval(music.chip.timer); music.chip = null; } }
+// Briefly drop the music under a crash.
+function duckMusic() {
+  if (!audio.ctx) return;
+  const g = audio.musicBus.gain, t = audio.ctx.currentTime;
+  g.cancelScheduledValues(t);
+  g.setTargetAtTime(CONFIG.musicVolume * CONFIG.musicDuck, t, 0.03);
+  g.setTargetAtTime(CONFIG.musicVolume, t + 0.8, 0.4);
+}
+
+// Chiptune: 4-bar loop of bass, arpeggio, a seeded little melody and drums,
+// in the neighborhood's key, scale, tempo and swing. Notes are scheduled a
+// moment ahead so timing stays tight even if a frame stutters.
+const SCALES = {
+  major: [0, 2, 4, 5, 7, 9, 11], minor: [0, 2, 3, 5, 7, 8, 10], mixo: [0, 2, 4, 5, 7, 9, 10], dorian: [0, 2, 3, 5, 7, 9, 10],
+};
+function scheduleChip() {
+  const st = music.chip, ctx = audio.ctx;
+  if (!st || ctx.state !== 'running') return;
+  const m = theme().music, fast = game.phase !== 'route' && game.state === 'playing' ? 1.08 : 1;   // bonus course: a bit quicker
+  const step = 60 / (m.bpm * fast) / 4;
+  while (st.next < ctx.currentTime + 0.12) {
+    chipStep(st.step, st.next, m, step);
+    st.next += step * (st.step % 2 === 0 ? 1 + m.swing : 1 - m.swing);
+    st.step = (st.step + 1) % 64;
+  }
+}
+function chipStep(i, t0, m, step) {
+  const bus = audio.musicBus, sc = SCALES[m.scale], s = i % 16, deg = m.prog[i >> 4];
+  const chord = (k) => { const idx = deg + k * 2; return m.root + sc[idx % 7] + 12 * Math.floor(idx / 7); };
+  if (s % 4 === 0) tone({ t0, bus, type: 'triangle', f: NOTE(chord(0) - 24), dur: step * 3.5, vol: 0.32 });
+  if (s % 4 === 2) tone({ t0, bus, type: 'triangle', f: NOTE(chord(s % 8 === 2 ? 2 : 0) - 12), dur: step * 1.5, vol: 0.18 });
+  if (s % 2 === 0) tone({ t0, bus, type: 'square', f: NOTE(chord([0, 1, 2, 1][(s / 2) % 4]) + 12), dur: step * 1.4, vol: 0.035 });
+  if (s % 4 === 0 && hash(m.seed, (i % 32) + 1) > 0.3) {   // melody repeats every 2 bars
+    const k = (hash(m.seed, i % 32) * 4) | 0;
+    tone({ t0, bus, type: 'square', f: NOTE(chord(k === 3 ? 1 : k) + 24), dur: step * (hash(m.seed, i % 32 + 99) > 0.5 ? 3.5 : 1.8), vol: 0.05 });
+  }
+  if (s % 8 === 0) tone({ t0, bus, type: 'sine', f: 150, f2: 45, dur: 0.12, vol: 0.4 });            // kick
+  if (s % 8 === 4) noise({ t0, bus, filter: 'bandpass', f: 1800, q: 0.8, dur: 0.09, vol: 0.16 });    // snare
+  if (s % 2 === 1) noise({ t0, bus, filter: 'highpass', f: 7000, dur: 0.025, vol: 0.06 });           // hat
+}
+
+// --- Pause ---
+function pauseGame() {
+  if (game.state !== 'playing') return;
+  game.state = 'paused';
+  pointers.clear();
+  input.left = input.right = false;
+  pauseMusic();
+  updatePedalSound(false);
+  showPanel(ui.pause);
+}
+function resumeGame() {
+  if (game.state !== 'paused') return;
+  game.state = 'playing';
+  hideOverlay();
+  if (music.on) startMusic();
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { pauseGame(); pauseMusic(); }
+  else if (music.on && game.state !== 'paused') startMusic();
+});
+
+// --- Sound settings UI (start screen + pause menu) ---
+const MUSIC_MODES = ['song', 'chip', 'off'];
+const MUSIC_LABEL = { song: '🎵 SONG', chip: '🎵 8-BIT', off: '🔇 MUSIC' };
+function updateAudioUI() {
+  const s = audio.settings;
+  document.querySelectorAll('.set-sfx').forEach((b) => { b.textContent = s.sfx ? '🔊 SFX' : '🔇 SFX'; b.classList.toggle('off', !s.sfx); });
+  document.querySelectorAll('.set-music').forEach((b) => { b.textContent = MUSIC_LABEL[s.music]; b.classList.toggle('off', s.music === 'off'); });
+  document.querySelectorAll('.set-vol').forEach((r) => { r.value = Math.round(s.volume * 100); });
+}
+function cycleMusic() {
+  const s = audio.settings;
+  s.music = MUSIC_MODES[(MUSIC_MODES.indexOf(s.music) + 1) % MUSIC_MODES.length];
+  saveAudio();
+  if (s.music === 'off') { pauseMusic(); music.on = false; } else startMusic();
+  updateAudioUI();
+}
+document.querySelectorAll('.set-sfx').forEach((b) => b.addEventListener('click', (e) => {
+  e.stopPropagation(); unlockAudio();
+  audio.settings.sfx = !audio.settings.sfx; saveAudio(); applyAudioSettings(); sfx.click();
+}));
+document.querySelectorAll('.set-music').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); cycleMusic(); }));
+document.querySelectorAll('.set-vol').forEach((r) => {
+  r.addEventListener('click', (e) => e.stopPropagation());
+  r.addEventListener('input', () => { unlockAudio(); audio.settings.volume = r.value / 100; saveAudio(); applyAudioSettings(); });
+});
+ui.pauseBtn.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); pauseGame(); });
+ui.resumeBtn.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); resumeGame(); });
+updateAudioUI();
+
+
+// ---------------------------------------------------------------------
 // 10. LOOP
 // ---------------------------------------------------------------------
 let lastTime = performance.now();
@@ -3078,6 +3609,9 @@ function frame(now) {
   lastTime = now;
   update(dt);
   render(now);
+  updatePedalSound(game.state === 'playing' && bike.airT <= 0 && !bike.crashed);
+  const hidePause = game.state !== 'playing';
+  if (ui.pauseBtn.hidden !== hidePause) ui.pauseBtn.hidden = hidePause;
   requestAnimationFrame(frame);
 }
 

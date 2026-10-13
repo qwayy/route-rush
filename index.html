@@ -15,7 +15,7 @@
 </head>
 <body>
   <canvas id="game"></canvas>
-  <button id="mute-btn" class="mute" type="button" aria-label="Music on">♪</button>
+  <button id="pause-btn" class="pause-btn" type="button" aria-label="Pause" hidden>II</button>
 
   <div id="overlay" class="overlay">
     <section id="screen-title" class="panel">
@@ -30,8 +30,13 @@
       <p class="best">Best: <span id="title-best">0</span></p>
       <button id="tilt-btn" class="share hidden" type="button">Tap to enable tilt</button>
       <p id="steer-mode" class="keys"></p>
+      <div class="audio-row">
+        <button class="aud-btn set-sfx" type="button">🔊 SFX</button>
+        <button class="aud-btn set-music" type="button">🎵 SONG</button>
+        <input class="set-vol" type="range" min="0" max="100" value="80" aria-label="Volume">
+      </div>
       <p class="cta">Tap to start</p>
-      <p class="keys">Desktop: <span class="sys">← →</span> steer · A/D throw · Space starts</p>
+      <p class="keys">Desktop: <span class="sys">← →</span> steer · A/D throw · Space starts · P pause · M music</p>
     </section>
 
     <section id="screen-over" class="panel hidden">
@@ -46,6 +51,17 @@
       <button id="share-btn" class="share" type="button">Share</button>
       <p id="toast" class="toast"></p>
       <p class="cta">Tap anywhere to ride again</p>
+    </section>
+
+    <section id="screen-pause" class="panel hidden">
+      <h2>Paused</h2>
+      <div class="audio-row">
+        <button class="aud-btn set-sfx" type="button">🔊 SFX</button>
+        <button class="aud-btn set-music" type="button">🎵 SONG</button>
+        <input class="set-vol" type="range" min="0" max="100" value="80" aria-label="Volume">
+      </div>
+      <button id="resume-btn" class="share" type="button">Resume</button>
+      <p class="keys">P or Esc also resumes</p>
     </section>
 
     <section id="screen-day" class="panel hidden">
