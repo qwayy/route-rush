@@ -206,3 +206,39 @@ h2 { font-size: 20px; font-weight: 400; text-transform: uppercase; color: var(--
 .rewatch .aud-btn { font-size: 8px; }
 .rewatch .aud-btn:disabled { color: #6b7280; cursor: default; }
 .panel canvas, .aud-btn canvas { position: static; inset: auto; }
+
+/* ---------- Rider skills + unlocks ---------- */
+.menu-panel { max-height: 100%; overflow-y: auto; }
+.story { margin-top: 6px; font-size: 7px; line-height: 1.7; opacity: 0.8; min-height: 12px; }
+.story.lock { color: var(--gold); opacity: 1; }
+.skill-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 8px 10px; background: #1a1c2c; text-align: left; }
+#skill-icon canvas { display: block; width: 27px; height: 27px; }
+.skill-row b { display: block; font-size: 9px; font-weight: 400; color: var(--gold); }
+.skill-row span { display: block; margin-top: 4px; font-size: 7px; line-height: 1.6; opacity: 0.85; }
+.rider-grid button { position: relative; }
+.rider-grid button .tile-skill { position: absolute; top: 4px; right: 4px; width: 14px; height: 14px; }
+.rider-grid button.locked { color: #8a93a3; }
+.share:disabled { background: #3a4150; color: #8a93a3; cursor: default; }
+.unlock-pop {
+  position: absolute;
+  top: calc(70px + env(safe-area-inset-top, 0px));
+  left: 0;
+  right: 0;
+  width: max-content;
+  margin: 0 auto;
+  z-index: 20;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px 8px 8px;
+  border: 4px solid #1a1c2c;
+  outline: 3px solid var(--gold);
+  outline-offset: -7px;
+  background: #2a3346;
+  box-shadow: 4px 4px 0 #1a1c2c;
+  pointer-events: none;
+  white-space: nowrap;
+  animation: pop-in 0.18s steps(3);
+}
+.unlock-pop.hidden { display: none; }
+.unlock-pop canvas { position: static; width: 36px; height: 36px; }
+.unlock-pop b { display: block; font-size: 10px; font-weight: 400; color: var(--gold); }
+.unlock-pop span { display: block; margin-top: 6px; font-size: 8px; }

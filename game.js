@@ -40,7 +40,8 @@ const CONFIG = {
   fullscreenOnTouch: true,   // request fullscreen when a phone player starts
 
   // Look: pixel art + fake 3D
-  typeSpeed: 38,             // cutscene typewriter, characters per second
+  typeSpeed: 38,
+  unlockPopTime: 3,          // seconds a "new rider" pop-up stays up             // cutscene typewriter, characters per second
   pixelSize: 2,              // logical units per art pixel; must divide gameWidth (2 = crisp, 4 = chunky)
   heightY: 0.75,             // how far up the screen one unit of height draws
   perspX: 0.0026,            // how much tall things lean away from the centre line
@@ -184,7 +185,28 @@ const CONFIG = {
   pedalVolume: 0.35,         // pedal ticks + whir (kept quiet)
   pedalStroke: 44,           // distance ridden per pedal tick
   pitchJitter: 0.07,         // +-7% random pitch on repeated sounds
-  comboMaxSteps: 12,         // the delivery blip climbs up to this many semitones
+  comboMaxSteps: 12,
+  // Combo: deliveries in a row raise a points multiplier (everyone); a miss
+  // or a broken subscriber window resets it.
+  comboStep: 5,              // deliveries in a row per multiplier step
+  comboBonus: 0.1,           // multiplier added per step
+  comboMax: 1.5,             // multiplier cap
+
+  // Rider skills: each rider has one passive skill (see RIDERS).
+  sureShotMailbox: 1.4,      // Sure Shot: mailbox hit area x this
+  quickArmCooldown: 0.6,     // Quick Arm: throw cooldown x this
+  quickArmPaperSpeed: 0.9,   // Quick Arm: papers fly x this fast
+  secondWindPerDay: 1,       // Second Wind: crashes shrugged off per day
+  secondWindInvuln: 2,       // Second Wind: seconds of blinking after a save
+  secondWindWobble: 0.8,     // Second Wind: seconds the bike wobbles after a save
+  comboKingStep: 3,          // Combo King: deliveries per multiplier step
+  comboKingMax: 2,           // Combo King: multiplier cap
+  comboKingForgive: 1,       // Combo King: misses a streak survives (refills every step)
+  smoothSteer: 1.6,          // Smooth Rider: bike follows the steering this much faster
+  smoothSensitivity: 1.25,   // Smooth Rider: tilt / drag / arrow steering x this
+  hustlerBonus: 1.5,         // Hustler: bonus course points x this
+  luckyMisses: 1,            // Lucky Charm: missed subscribers a Perfect Day forgives
+  unlockScore: 50000,        // one-run score that unlocks a rider         // the delivery blip climbs up to this many semitones
   honkLead: 0.9,             // a parked car honks this many seconds before you reach it (if you're close)
   defaultMusic: 'song',      // 'song' (musicFile), 'chip' (generated 8-bit) or 'off'
   musicFile: 'music/shit-talking.mp3',
@@ -518,15 +540,15 @@ function setupDay() {
     throwCooldown: 0, dayStartDelivered: game.totalDelivered,
     shake: 0, flash: 0, flashColor: COLORS.bad, crashTimer: 0, crashOutcome: '', crashReason: '',
     warnedObstacles: false, banners: [],
-    houses: [], decor: [], obstacles: [], ramps: [], targets: [], lines: [], tracks: [], smokes: [], driveways: [], pavedLots: [], lights: [], trails: [], queuedThrow: 0, combo: 0, pedalPhase: 0,
+    houses: [], decor: [], obstacles: [], ramps: [], targets: [], lines: [], tracks: [], smokes: [], driveways: [], pavedLots: [], lights: [], trails: [], queuedThrow: 0, combo: 0, comboShield: CONFIG.comboKingForgive, secondWind: CONFIG.secondWindPerDay, pedalPhase: 0,
     flying: [], groundPapers: [], particles: [], pops: [],
     stats: {
       subs: 0, deliveries: 0, mailbox: 0, windows: 0, subWindows: 0, props: 0, targets: 0,
       routePoints: 0, perfectBonus: 0, bonusPoints: 0, startScore: game.score,
-      perfect: false, bonusClean: false, added: 0,
+      perfect: false, lucky: false, bonusClean: false, added: 0,
     },
   });
-  Object.assign(bike, { x: 200, vx: 0, spin: 0, crashed: false, airT: 0, h: 0, invuln: 0 });
+  Object.assign(bike, { x: 200, vx: 0, spin: 0, crashed: false, airT: 0, h: 0, invuln: 0, wobble: 0 });
   input.steerTarget = 200;
   pointers.clear();
   layoutDay();
@@ -549,6 +571,7 @@ function pushBanner(title, sub, color, time, place) {
 }
 
 function crash(o) {
+  if (riderHas('secondWind') && game.secondWind > 0) { secondWind(); return; }
   bike.crashed = true; bike.airT = 0; bike.h = 0;
   game.state = 'crashed';
   game.crashTimer = CONFIG.crashDelay;
@@ -572,6 +595,19 @@ function crash(o) {
   popText(game.lives > 0 ? `CRASH! ${game.lives} LEFT` : 'CRASH!', bike.x, game.dist + 40, COLORS.bad, 26);
   sfx.crash(game.crashOutcome === 'over');
   duckMusic();
+}
+
+// Second Wind: the hit is shrugged off once per day. Wobble, blink, keep riding.
+function secondWind() {
+  game.secondWind--;
+  bike.invuln = CONFIG.secondWindInvuln;
+  bike.wobble = CONFIG.secondWindWobble;
+  game.shake = Math.max(game.shake, 7);
+  game.flash = 0.3; game.flashColor = COLORS.perfect;
+  burst(bike.x, game.dist, COLORS.glass, 12, 140);
+  popText('SECOND WIND!', bike.x, game.dist + 40, COLORS.perfect, 24);
+  sfx.clatter();
+  sfx.boing();
 }
 
 function afterCrash() {
@@ -707,7 +743,7 @@ canvas.addEventListener('pointermove', (e) => {
   }
   if (p.dragging) {
     const d = (e.clientX - p.lastX) / view.scale;
-    input.steerTarget = clamp(input.steerTarget + d * CONFIG.dragSensitivity, L.bikeMinX, L.bikeMaxX);
+    input.steerTarget = clamp(input.steerTarget + d * CONFIG.dragSensitivity * (riderHas('smoothRider') ? CONFIG.smoothSensitivity : 1), L.bikeMinX, L.bikeMaxX);
     p.lastX = e.clientX;
   }
 });
@@ -1054,7 +1090,7 @@ function spawnObstacle(z) {
     case 'fan':   // Game Day fans dart across like dogs do
       game.obstacles.push({
         type, z, x: sideX(side, 118), dir: -side, w: type === 'fan' ? 16 : 26, h: type === 'fan' ? 12 : 14,
-        active: false, anim: 0,
+        active: false, anim: 0, sit: type === 'dog' && riderHas('dogWhisperer'),   // Dog Whisperer: sits on the sidewalk
         speed: rand(CONFIG.dogSpeedMin, CONFIG.dogSpeedMax),
         lead: rand(CONFIG.dogRunLeadMin, CONFIG.dogRunLeadMax),
       });
@@ -1111,6 +1147,7 @@ function update(dt) {
   game.throwCooldown = Math.max(0, game.throwCooldown - dt);
   if (game.throwCooldown <= 0 && game.queuedThrow) throwPaper(game.queuedThrow);   // tap made during the cooldown
   bike.invuln = Math.max(0, bike.invuln - dt);
+  bike.wobble = Math.max(0, bike.wobble - dt);
 
   // Difficulty + forward motion
   const level = Math.floor(game.housesPassedToday / CONFIG.housesPerLevel);
@@ -1126,12 +1163,13 @@ function update(dt) {
 
   // Steering
   if (tilt.enabled) tilt.smooth = damp(tilt.smooth, tilt.raw, CONFIG.tiltSmoothing, dt);
-  if (tiltActive()) input.steerTarget += tiltSteer() * dt;
-  if (input.left) input.steerTarget -= CONFIG.keySteerSpeed * dt;
-  if (input.right) input.steerTarget += CONFIG.keySteerSpeed * dt;
+  const sens = riderHas('smoothRider') ? CONFIG.smoothSensitivity : 1;
+  if (tiltActive()) input.steerTarget += tiltSteer() * sens * dt;
+  if (input.left) input.steerTarget -= CONFIG.keySteerSpeed * sens * dt;
+  if (input.right) input.steerTarget += CONFIG.keySteerSpeed * sens * dt;
   input.steerTarget = clamp(input.steerTarget, L.bikeMinX, L.bikeMaxX);
   const prevX = bike.x;
-  bike.x = damp(bike.x, input.steerTarget, CONFIG.steerSmoothing, dt);
+  bike.x = damp(bike.x, input.steerTarget, CONFIG.steerSmoothing * (riderHas('smoothRider') ? CONFIG.smoothSteer : 1), dt);
   bike.vx = (bike.x - prevX) / dt;
 
   // Ramps + jumping (airborne = immune to obstacles)
@@ -1160,6 +1198,7 @@ function update(dt) {
 
   // Obstacles
   for (const o of game.obstacles) {
+    if (o.sit) continue;   // a sitting dog stays put on the sidewalk
     if (o.type === 'dog' || o.type === 'fan') {
       if (!o.active && (o.z - game.dist) / game.speed < o.lead) { o.active = true; if (o.type === 'dog') sfx.bark(); }
       if (o.active) { o.x += o.dir * o.speed * dt; o.anim += dt * 16; }
@@ -1207,7 +1246,7 @@ function update(dt) {
     h.missed = true;
     popText('MISSED', sideX(h.side, 80), game.dist + view.bikeY - (view.H - 70), COLORS.neutral, 16);
     sfx.missed();
-    game.combo = 0;
+    breakCombo(sideX(h.side, 80), game.dist + view.bikeY - (view.H - 100));
   }
 
   // Day phases
@@ -1260,12 +1299,16 @@ function updateSmoke(dt) {
 }
 function finishRoute() {
   const s = game.stats;
-  s.perfect = s.subs > 0 && s.deliveries === s.subs && s.subWindows === 0;
+  const missed = s.subs - s.deliveries, forgive = riderHas('luckyCharm') ? CONFIG.luckyMisses : 0;   // Lucky Charm
+  s.perfect = s.subs > 0 && s.deliveries > 0 && missed <= forgive && s.subWindows === 0;
+  s.lucky = s.perfect && missed > 0;
   game.phase = 'bonus';
   if (s.perfect) {
+    progress.perfectDays = (progress.perfectDays || 0) + 1;
+    saveProgress();
     s.perfectBonus = s.routePoints * (CONFIG.perfectMultiplier - 1);
     game.score += s.perfectBonus;
-    pushBanner('PERFECT DELIVERY!', `DAY POINTS x${CONFIG.perfectMultiplier}  +${s.perfectBonus}`, COLORS.perfect, CONFIG.bannerTime + 0.6);
+    pushBanner(s.lucky ? 'LUCKY PERFECT!' : 'PERFECT DELIVERY!', `DAY POINTS x${CONFIG.perfectMultiplier}  +${s.perfectBonus}`, COLORS.perfect, CONFIG.bannerTime + 0.6);
     celebrate();
     sfx.perfect();
   }
@@ -1275,8 +1318,8 @@ function finishRoute() {
 function finishBonus() {
   game.stats.bonusClean = game.bonus.clean;
   if (game.bonus.clean) {
-    addPoints(CONFIG.pointsBonusClear);
-    popText(`+${CONFIG.pointsBonusClear} COURSE CLEAR!`, view.W / 2, game.dist + 140, COLORS.perfect, 24);
+    addPoints(bonusPts(CONFIG.pointsBonusClear));
+    popText(`+${bonusPts(CONFIG.pointsBonusClear)} COURSE CLEAR!`, view.W / 2, game.dist + 140, COLORS.perfect, 24);
     sfx.clear();
     celebrate();
   }
@@ -1336,7 +1379,7 @@ function throwPaper(side) {
     if (game.throwCooldown <= CONFIG.throwBuffer) game.queuedThrow = side;
     return;
   }
-  game.throwCooldown = CONFIG.throwCooldown;
+  game.throwCooldown = CONFIG.throwCooldown * (riderHas('quickArm') ? CONFIG.quickArmCooldown : 1);
   game.queuedThrow = 0;
   sfx.throw();
   const x = bike.x + side * 8;
@@ -1353,7 +1396,7 @@ function throwPaper(side) {
 function updatePaper(p, dt) {
   p.rot += p.spin * dt;
   if (p.h > CONFIG.throwHeight) p.h = Math.max(CONFIG.throwHeight, p.h - 80 * dt);   // thrown mid-jump
-  const dx = CONFIG.throwSpeed * dt, dz = p.vz * dt;
+  const dx = CONFIG.throwSpeed * (riderHas('quickArm') ? CONFIG.quickArmPaperSpeed : 1) * dt, dz = p.vz * dt;
   const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) / CONFIG.paperStep));
   for (let i = 0; i < steps; i++) {
     const a = [p.lx, p.z];
@@ -1458,8 +1501,8 @@ function applyPaperHit(p, hit) {
       hit.t.hit = true;
       s.targets++;
       sfx.ping();
-      addPoints(CONFIG.pointsBonusTarget);
-      popText(`+${CONFIG.pointsBonusTarget}`, x, z, COLORS.perfect, 24);
+      addPoints(bonusPts(CONFIG.pointsBonusTarget));
+      popText(`+${bonusPts(CONFIG.pointsBonusTarget)}`, x, z, COLORS.perfect, 24);
       burst(x, z, { fountain: COLORS.waterLight, smoker: COLORS.smoke, newsstand: COLORS.paper }[hit.t.kind] || COLORS.bad, 12, 130);
       burst(x, z, '#ffffff', 8, 110);
       dropPaper(p, hit.lx + 6);
@@ -1521,9 +1564,13 @@ function deliverTo(h, kind, x, z) {
   if (h.delivered) { popText('GOT ONE ALREADY', x, z, COLORS.neutral, 14); return false; }
   const d = DELIVERY[kind];
   deliver(h);
-  addPoints(d.points());
+  const mult = comboMult(), pts = Math.round(d.points() * mult / 10) * 10;
+  addPoints(pts);
   sfx[kind](game.combo++);   // success blip climbs with each delivery in a row
-  popText(`+${d.points()} ${d.label}`, x, z, d.color, d.size);
+  popText(`+${pts} ${d.label}`, x, z, d.color, d.size);
+  const king = riderHas('comboKing');
+  if (king && game.combo % CONFIG.comboKingStep === 0) game.comboShield = CONFIG.comboKingForgive;
+  if (comboMult() > mult) popText(`COMBO x${comboMult().toFixed(1)}`, x, z + 34, COLORS.perfect, 16);
   burst(x, z, d.color, CONFIG.particleCount + (kind === 'mailbox' ? 6 : 0), kind === 'mailbox' ? 150 : 110);
   if (kind === 'mailbox') { game.stats.mailbox++; game.shake = Math.max(game.shake, CONFIG.shakeMailbox); }
   return true;
@@ -1539,7 +1586,7 @@ function breakWindow(h, idx, x, z) {
   game.shake = Math.max(game.shake, CONFIG.shakeWindow);
   if (h.sub) {
     s.subWindows++;
-    game.combo = 0;
+    breakCombo(x, z + 30);
     popText('OOPS! SUBSCRIBER', x, z, COLORS.bad, 20);
     game.flash = 0.3; game.flashColor = COLORS.bad;
   } else {
@@ -1555,19 +1602,38 @@ function hitZones(h) {
   const cz = h.z + h.len / 2;
   const porch = CONFIG.porchHitHalf + CONFIG.paperHalf;   // door/porch/steps (paper touching it counts)
   const winNear = porch + CONFIG.windowGap, winFar = h.len / 2 - 6;
+  const mb = riderHas('sureShot') ? CONFIG.sureShotMailbox : 1;   // Sure Shot: bigger mailbox target
   return {
     cz,
     porch: [cz - porch, cz + porch],
-    mailbox: [h.mailZ - CONFIG.mailboxHitHalf, h.mailZ + CONFIG.mailboxHitHalf],
-    mailboxX: [L.mailboxX - CONFIG.mailboxHitHalfX, L.mailboxX + CONFIG.mailboxHitHalfX],
+    mailbox: [h.mailZ - CONFIG.mailboxHitHalf * mb, h.mailZ + CONFIG.mailboxHitHalf * mb],
+    mailboxX: [L.mailboxX - CONFIG.mailboxHitHalfX * mb, L.mailboxX + CONFIG.mailboxHitHalfX * mb],
     windows: winFar > winNear ? [[cz - winFar, cz - winNear], [cz + winNear, cz + winFar]] : [],
     property: [h.propZ0, h.propZ1],
   };
 }
 
+// Points multiplier from deliveries in a row. Combo King builds it faster,
+// to a higher cap, and a streak survives a miss.
+function comboMult() {
+  const king = riderHas('comboKing');
+  const step = king ? CONFIG.comboKingStep : CONFIG.comboStep, cap = king ? CONFIG.comboKingMax : CONFIG.comboMax;
+  return Math.min(cap, 1 + Math.floor(game.combo / step) * CONFIG.comboBonus);
+}
+function breakCombo(x, z) {
+  if (riderHas('comboKing') && game.combo > 0 && game.comboShield > 0) {
+    game.comboShield--;
+    popText('STREAK SAVED', x, z, COLORS.perfect, 14);
+    return;
+  }
+  game.combo = 0;
+}
+
 function canDeliver(h) { return h.sub && !h.delivered; }
 function deliver(h) { h.delivered = true; game.stats.deliveries++; game.totalDelivered++; }
 function dropPaper(p, lx) { game.groundPapers.push({ x: sideX(p.side, lx), z: p.z, rot: p.rot }); }
+
+function bonusPts(n) { return riderHas('hustler') ? Math.round(n * CONFIG.hustlerBonus) : n; }   // Hustler
 
 function addPoints(n) {
   game.score += n;
@@ -1654,6 +1720,15 @@ const RIDER_BOTTOM = ['....kwwk....', '....kwwk....', '.....kk.....'];
 const SPRITE_ART = {
   riderA: [...RIDER_TOP, '...s.ww.....', '...k.ww.s...', '.....ww.k...', ...RIDER_BOTTOM],
   riderB: [...RIDER_TOP, '.....ww.s...', '...s.ww.k...', '...k.ww.....', ...RIDER_BOTTOM],
+  dogSit: [
+    '.......dk.',
+    '......ddkd',
+    '......ddd.',
+    'k....dddd.',
+    '.k..ddDdd.',
+    '..dddDDdd.',
+    '..DDD.Dd..',
+  ],
   dogA: [
     '.........dk...',
     'k........ddkd.',
@@ -1896,6 +1971,7 @@ function makeShadow(w, h) {
 const SPR = {};
 for (const k in SPRITE_ART) SPR[k] = spriteFromArt(SPRITE_ART[k]);
 SPR.dogA_L = flipped(SPR.dogA);
+SPR.dogSit_L = flipped(SPR.dogSit);
 SPR.dogB_L = flipped(SPR.dogB);
 const LEAVES = { hi: '#6cbf4f', mid: '#4a9a3e', lo: '#2f6b2e', edge: '#1f4a22' };
 // Big leafy oaks / maples, one sprite per canopy color (THEMES[].trees picks).
@@ -2849,6 +2925,11 @@ function drawObstacle(o, t) {
     case 'fan': {
       const base = y + o.h / 2;
       drawSpriteC(SPR.shadowM, o.x, base - 1);
+      if (o.sit) {   // Dog Whisperer: sitting, tail up, little heart
+        drawSprite(o.dir > 0 ? SPR.dogSit : SPR.dogSit_L, o.x, base);
+        drawSprite(SPR.heart, o.x + o.dir * 4, base - 20 - Math.round(Math.abs(Math.sin(t * 3))) * ps);
+        break;
+      }
       const run = o.active && Math.floor(o.anim / Math.PI) % 2 === 1;
       drawSprite(SPR[o.type + (run ? 'B' : 'A') + (o.dir > 0 ? '' : '_L')], o.x, base);
       if (!o.active) {   // telegraph before it bolts
@@ -3016,7 +3097,8 @@ function drawBike(_, t) {
   if (bike.invuln > 0 && Math.floor(t * 12) % 2) return;   // blink after respawn
   drawSpriteC(SPR.shadowBike, bike.x + 4, view.bikeY + 4);
   const pedal = !bike.crashed && bike.airT <= 0 && Math.floor(game.dist / 22) % 2 === 1;
-  const lean = Math.round(clamp(bike.vx * CONFIG.leanPerSpeed, -CONFIG.maxLean, CONFIG.maxLean) / 0.1) * 0.1;
+  const wob = bike.wobble > 0 ? Math.sin(t * 38) * 0.35 * bike.wobble / CONFIG.secondWindWobble : 0;   // Second Wind save
+  const lean = Math.round((clamp(bike.vx * CONFIG.leanPerSpeed, -CONFIG.maxLean, CONFIG.maxLean) + wob) / 0.1) * 0.1;
   drawSprite(pedal ? SPR.riderB : SPR.riderA, bike.x, view.bikeY + CONFIG.bikeHalfL - bike.h * CONFIG.heightY,
     bike.crashed ? bike.spin : lean);
 }
@@ -3136,6 +3218,8 @@ function drawHUD() {
     ctx.font = `10px ${FONT}`;
     textShadowed('BONUS', view.W / 2, top + 30, COLORS.good);
   }
+  if (comboMult() > 1) textShadowed(`COMBO x${comboMult().toFixed(1)}`, 12, top + 66, COLORS.perfect);
+  drawSkillHUD(top);
 
   if (debug.hitAreas) {   // label + color key
     ctx.textAlign = 'center';
@@ -3275,6 +3359,7 @@ function showGameOver() {
   game.overShownAt = performance.now();
   const isNewBest = game.score > best;
   if (isNewBest) { best = game.score; storage.set(BEST_KEY, best); }
+  checkUnlocks();
 
   ui.overTitle.textContent = game.overTitle || 'Route over';
   ui.reason.textContent = game.overReason;
@@ -3302,10 +3387,12 @@ function showDaySummary() {
   const subsNext = game.street.filter((t) => t.sub).length;
   const nextDay = (game.day + 1) % DAY_NAMES.length;
 
+  checkUnlocks();
   const name = DAY_NAMES[game.day];
   ui.dayTitle.textContent = `${name[0]}${name.slice(1).toLowerCase()} done`;
   ui.dayPlace.textContent = theme().name;
   ui.dayPerfect.classList.toggle('hidden', !s.perfect);
+  ui.dayPerfect.textContent = s.lucky ? 'LUCKY PERFECT DAY!' : 'PERFECT DELIVERY!';
   ui.sumDeliveries.textContent = `${s.deliveries}/${s.subs}`;
   ui.sumMailbox.textContent = s.mailbox;
   ui.sumWindows.textContent = s.windows;
@@ -3833,16 +3920,57 @@ updateAudioUI();
 const RIDER_KEY = 'routeRush.rider';
 const PROGRESS_KEY = 'routeRush.progress';
 
+// Looks are cosmetic; the skill comes from who they are (story), never how they look.
 const RIDERS = [
-  { id: 'jada', name: 'JADA', skin: '#5c3a24', hair: '#17110e', style: 'afro', helmet: '#ff8c42', shirt: '#2ec4b6', pants: '#34495e' },
-  { id: 'marcus', name: 'MARCUS', skin: '#7a4a2c', hair: '#21160f', style: 'locs', helmet: '#d64545', shirt: '#ffd23f', pants: '#2b2b35' },
-  { id: 'aaliyah', name: 'AALIYAH', skin: '#8f5b3a', hair: '#1a1210', style: 'braids', helmet: '#9b5de5', shirt: '#f15bb5', pants: '#34495e' },
-  { id: 'mateo', name: 'MATEO', skin: '#c48a5c', hair: '#3a2416', style: 'curly', helmet: '#3fa34d', shirt: '#ff8c42', pants: '#3b4a6b' },
-  { id: 'ethan', name: 'ETHAN', skin: '#f2c8a0', hair: '#d9b45a', style: 'straight', helmet: '#3a7bd5', shirt: '#d64545', pants: '#2b2b35' },
-  { id: 'kenji', name: 'KENJI', skin: '#e6b88a', hair: '#15151a', style: 'buzz', helmet: '#ffd23f', shirt: '#3a7bd5', pants: '#4a4a55' },
-  { id: 'emma', name: 'EMMA', skin: '#f8dcc8', hair: '#b5502a', style: 'ponytail', helmet: '#f15bb5', shirt: '#7fd0c4', pants: '#34495e' },
-  { id: 'amira', name: 'AMIRA', skin: '#a8714a', hair: '#7a2d4a', style: 'hijab', helmet: '#f7f4ea', shirt: '#3fa3a0', pants: '#2b2b35' },
+  { id: 'jada', name: 'JADA', skin: '#5c3a24', hair: '#17110e', style: 'afro', helmet: '#ff8c42', shirt: '#2ec4b6', pants: '#34495e',
+    skill: 'sureShot', story: 'Mini-golf champ three summers running.', unlock: 'start' },
+  { id: 'marcus', name: 'MARCUS', skin: '#7a4a2c', hair: '#21160f', style: 'locs', helmet: '#d64545', shirt: '#ffd23f', pants: '#2b2b35',
+    skill: 'quickArm', story: 'Former Little League pitcher.', unlock: 'start' },
+  { id: 'kenji', name: 'KENJI', skin: '#e6b88a', hair: '#15151a', style: 'buzz', helmet: '#ffd23f', shirt: '#3a7bd5', pants: '#4a4a55',
+    skill: 'smoothRider', story: 'BMX track regular since age seven.', unlock: 'start' },
+  { id: 'mateo', name: 'MATEO', skin: '#c48a5c', hair: '#3a2416', style: 'curly', helmet: '#3fa34d', shirt: '#ff8c42', pants: '#3b4a6b',
+    skill: 'dogWhisperer', story: 'Works weekends at the animal shelter.', unlock: 'perfect' },
+  { id: 'aaliyah', name: 'AALIYAH', skin: '#8f5b3a', hair: '#1a1210', style: 'braids', helmet: '#9b5de5', shirt: '#f15bb5', pants: '#34495e',
+    skill: 'comboKing', story: 'School band drummer. Never loses the beat.', unlock: 'bronze' },
+  { id: 'amira', name: 'AMIRA', skin: '#a8714a', hair: '#7a2d4a', style: 'hijab', helmet: '#f7f4ea', shirt: '#3fa3a0', pants: '#2b2b35',
+    skill: 'luckyCharm', story: 'Found a four-leaf clover. Twice.', unlock: 'silver' },
+  { id: 'emma', name: 'EMMA', skin: '#f8dcc8', hair: '#b5502a', style: 'ponytail', helmet: '#f15bb5', shirt: '#7fd0c4', pants: '#34495e',
+    skill: 'hustler', story: 'Runs the busiest lemonade stand on the block.', unlock: 'score' },
+  { id: 'ethan', name: 'ETHAN', skin: '#f2c8a0', hair: '#d9b45a', style: 'straight', helmet: '#3a7bd5', shirt: '#d64545', pants: '#2b2b35',
+    skill: 'secondWind', story: 'Skinned both knees learning to ride. Kept riding.', unlock: 'week4' },
 ];
+const pct = (f) => Math.round(Math.abs(1 - f) * 100);
+const SKILLS = {
+  sureShot: { name: 'SURE SHOT', desc: () => `Mailbox hit area ${pct(CONFIG.sureShotMailbox)}% bigger` },
+  quickArm: { name: 'QUICK ARM', desc: () => `Throws ${pct(CONFIG.quickArmCooldown)}% faster; papers fly a bit slower` },
+  smoothRider: { name: 'SMOOTH RIDER', desc: () => 'Faster, tighter steering (more sensitive)' },
+  dogWhisperer: { name: 'DOG WHISPERER', desc: () => 'Dogs sit on the sidewalk instead of chasing' },
+  comboKing: { name: 'COMBO KING', desc: () => `Combo builds faster (up to x${CONFIG.comboKingMax}) and survives a miss` },
+  luckyCharm: { name: 'LUCKY CHARM', desc: () => `Perfect Day still counts with ${CONFIG.luckyMisses} missed house` },
+  hustler: { name: 'HUSTLER', desc: () => `Bonus course points x${CONFIG.hustlerBonus}` },
+  secondWind: { name: 'SECOND WIND', desc: () => `Survives ${CONFIG.secondWindPerDay} crash per day` },
+};
+const UNLOCKS = {
+  start: { short: '', text: '', ok: () => true },
+  perfect: { short: 'PERFECT DAY', text: 'Get a Perfect Day', ok: () => (progress.perfectDays || 0) > 0 },
+  bronze: { short: 'WEEK 1', text: 'Finish Week 1 (bronze medal)', ok: () => !!progress.medals.bronze },
+  silver: { short: 'SILVER', text: 'Earn the silver medal (finish Week 2)', ok: () => !!progress.medals.silver },
+  score: { short: `${Math.round(CONFIG.unlockScore / 1000)}K PTS`, text: `Score ${CONFIG.unlockScore.toLocaleString('en-US')} in one run`, ok: () => Math.max(best, game.score || 0) >= CONFIG.unlockScore },
+  week4: { short: 'WEEK 4', text: 'Reach Week 4', ok: () => progress.furthest >= 3 * DAY_NAMES.length },
+};
+// 9x9 skill icons
+const ICON_PAL = { r: '#d64545', w: '#f7f4ea', a: '#ffd23f', Y: '#c9921e', b: '#3a7bd5', B: '#8fbfff', d: '#c9894f', t: '#2ec4b6', g: '#3fa34d', G: '#7fd06a', k: '#1a1c2c' };
+const SKILL_ART = {
+  sureShot: ['..rrrrr..', '.r.....r.', 'r..www..r', 'r.w...w.r', 'r.w.r.w.r', 'r.w...w.r', 'r..www..r', '.r.....r.', '..rrrrr..'],
+  quickArm: ['.....aaa.', '....aaa..', '...aaa...', '..aaaaaa.', '....aaa..', '...aaa...', '..aaa....', '.aa......', '.a.......'],
+  smoothRider: ['.........', '..tt.....', '.t..t...t', 't....ttt.', '.........', '..tt.....', '.t..t...t', 't....ttt.', '.........'],
+  dogWhisperer: ['..d...d..', '.ddd.ddd.', '..d...d..', 'd.......d', 'dd.ddd.dd', '..ddddd..', '.ddddddd.', '.ddddddd.', '..dd.dd..'],
+  comboKing: ['.........', 'a...a...a', 'aa.aaa.aa', 'aaaaaaaaa', 'aaraaaraa', 'aaaaaaaaa', 'YYYYYYYYY', '.........', '.........'],
+  luckyCharm: ['.gg...gg.', 'gGgg.gGgg', 'gggg.gggg', '.ggg.ggg.', '....g....', '.ggg.ggg.', 'gggg.gggg', 'gGgg.gggg', '.gg..g...'],
+  hustler: ['..aaaaa..', '.aaaYaaa.', 'aaaYYYaaa', 'aYYYYYYYa', 'aaYYYYYaa', 'aaYYaYYaa', 'aYaaaaaYa', '.aaaaaaa.', '..aaaaa..'],
+  secondWind: ['bbbbbbbbb', 'bBBbbbbbb', 'bBbbbbbbb', 'bbbbbbbbb', '.bbbbbbb.', '.bbbbbbb.', '..bbbbb..', '...bbb...', '....b....'],
+};
+for (const k in SKILL_ART) SPR['skill_' + k] = spriteFromArt(SKILL_ART[k], ICON_PAL);
 function hairShade(hex) {   // texture color: lighter for dark hair, darker for light hair
   const n = parseInt(hex.slice(1), 16), lum = 0.3 * (n >> 16) + 0.59 * ((n >> 8) & 255) + 0.11 * (n & 255);
   return lum < 90 ? shade(hex, 1.25) : shade(hex, 0.72);
@@ -3995,13 +4123,32 @@ SPR.key = spriteFromArt([
 ], { a: '#ffd23f' });
 
 // --- Saved choices + progress ---
-let rider = RIDERS.find((r) => r.id === storage.get(RIDER_KEY, '')) || null;
 const progress = (() => {
-  const base = { seen: {}, medals: {}, furthest: 0, weeksDone: 0 };
-  try { return { ...base, ...JSON.parse(storage.get(PROGRESS_KEY, '{}')) }; } catch (e) { return base; }
+  const base = { seen: {}, medals: {}, furthest: 0, weeksDone: 0, perfectDays: 0, unlocked: {} };
+  try {
+    const p = { ...base, ...JSON.parse(storage.get(PROGRESS_KEY, '{}')) };
+    for (const k of ['seen', 'medals', 'unlocked']) if (!p[k] || typeof p[k] !== 'object') p[k] = {};
+    return p;
+  } catch (e) { return base; }
 })();
 function saveProgress() { storage.set(PROGRESS_KEY, JSON.stringify(progress)); }
+function isUnlocked(r) { return r.unlock === 'start' || !!progress.unlocked[r.id]; }
+// Newly earned riders get a short pop-up (queued; shown outside cutscenes).
+const unlockQueue = [];
+function checkUnlocks(silent) {
+  let changed = false;
+  for (const r of RIDERS) {
+    if (isUnlocked(r) || !UNLOCKS[r.unlock].ok()) continue;
+    progress.unlocked[r.id] = 1;
+    changed = true;
+    if (!silent) unlockQueue.push(r);
+  }
+  if (changed) saveProgress();
+}
+checkUnlocks(true);   // progress from before unlocks existed counts
+let rider = RIDERS.find((r) => r.id === storage.get(RIDER_KEY, '') && isUnlocked(r)) || null;
 function curRider() { return rider || RIDERS[0]; }
+function riderHas(skill) { return curRider().skill === skill; }
 function applyRider() {
   const r = curRider();
   SPR.riderA = riderTopSprite(r, 0);
@@ -4021,6 +4168,7 @@ function weekDone(w) {
   const play = !progress.seen[id];
   progress.seen[id] = 1;
   saveProgress();
+  checkUnlocks();
   return play ? id : null;
 }
 
@@ -4344,6 +4492,11 @@ const selUI = {
   grid: document.getElementById('rider-grid'),
   preview: document.getElementById('rider-preview'),
   name: document.getElementById('rider-name'),
+  story: document.getElementById('rider-story'),
+  skillIcon: document.getElementById('skill-icon'),
+  skillName: document.getElementById('skill-name'),
+  skillDesc: document.getElementById('skill-desc'),
+  pop: document.getElementById('unlock-pop'),
   go: document.getElementById('rider-go'),
   back: document.getElementById('rider-back'),
   medals: document.getElementById('screen-medals'),
@@ -4363,13 +4516,30 @@ function canvasInto(el, c, cls) {
   el.appendChild(c);
 }
 function cloneCanvas(src) { const c = makeCanvas(src.width, src.height); c.getContext('2d').drawImage(src, 0, 0); return c; }
+function silhouette(src) {
+  const c = cloneCanvas(src), g = c.getContext('2d');
+  g.globalCompositeOperation = 'source-in';
+  g.fillStyle = '#0d1018';
+  g.fillRect(0, 0, c.width, c.height);
+  return c;
+}
+function skillIcon(id) { const c = cloneCanvas(SPR['skill_' + id]); c.className = 'px'; return c; }
 function updateRiderPreview() {
-  selUI.name.textContent = selPick.name;
-  canvasInto(selUI.preview, cloneCanvas(riderPerson(selPick, { bag: true })), 'px big');
-  const top = riderTopSprite(selPick, 0);
-  top.className = 'px bike';
-  selUI.preview.appendChild(top);
-  selUI.grid.querySelectorAll('button').forEach((b) => b.classList.toggle('sel', b.dataset.id === selPick.id));
+  const r = selPick, open = isUnlocked(r), sk = SKILLS[r.skill];
+  selUI.name.textContent = open ? r.name : 'LOCKED';
+  selUI.story.textContent = open ? r.story : `Unlock: ${UNLOCKS[r.unlock].text}`;
+  selUI.story.classList.toggle('lock', !open);
+  canvasInto(selUI.skillIcon, skillIcon(r.skill), 'px');
+  selUI.skillName.textContent = sk.name;
+  selUI.skillDesc.textContent = sk.desc();
+  const fig = riderPerson(r, { bag: true }), top = riderTopSprite(r, 0);
+  canvasInto(selUI.preview, open ? cloneCanvas(fig) : silhouette(fig), 'px big');
+  const bike = open ? top : silhouette(top);
+  bike.className = 'px bike';
+  selUI.preview.appendChild(bike);
+  selUI.go.disabled = !open;
+  selUI.go.textContent = open ? (selThen ? 'RIDE!' : 'CHOOSE') : 'LOCKED';
+  selUI.grid.querySelectorAll('button').forEach((b) => b.classList.toggle('sel', b.dataset.id === r.id));
 }
 function buildRiderGrid() {
   selUI.grid.innerHTML = '';
@@ -4377,11 +4547,15 @@ function buildRiderGrid() {
     const b = document.createElement('button');
     b.type = 'button';
     b.dataset.id = r.id;
-    const pc = makePortrait(r, '#1a1c2c');
+    const open = isUnlocked(r);
+    const pc = open ? makePortrait(r, '#1a1c2c') : silhouette(makePortrait(r, 'rgba(0,0,0,0)'));
+    if (!open) { const g = pc.getContext('2d'); g.globalCompositeOperation = 'destination-over'; g.fillStyle = '#3a4150'; g.fillRect(0, 0, 18, 18); }
     pc.className = 'px';
     b.appendChild(pc);
+    if (open) { const ic = skillIcon(r.skill); ic.classList.add('tile-skill'); b.appendChild(ic); }
+    b.classList.toggle('locked', !open);
     const s = document.createElement('span');
-    s.textContent = r.name;
+    s.textContent = open ? r.name : `🔒${UNLOCKS[r.unlock].short}`;
     b.appendChild(s);
     b.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); selPick = r; updateRiderPreview(); });
     selUI.grid.appendChild(b);
@@ -4398,13 +4572,14 @@ function showRiderSelect(then) {
   game.state = 'menu';
   selThen = then || null;
   selPick = curRider();
-  selUI.go.textContent = then ? 'RIDE!' : 'CHOOSE';
   selUI.back.classList.toggle('hidden', !!then && !rider);
+  buildRiderGrid();
   updateRiderPreview();
   showPanel(selUI.panel);
 }
 selUI.go.addEventListener('click', (e) => {
   e.stopPropagation();
+  if (!isUnlocked(selPick)) return;
   sfx.click();
   rider = selPick;
   storage.set(RIDER_KEY, rider.id);
@@ -4464,6 +4639,38 @@ selUI.medBack.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(
 selUI.riderBtn.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showRiderSelect(null); });
 selUI.medalsBtn.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showMedals(); });
 
+// "New rider!" pop-up: one at a time, never over a cutscene.
+const pop = { until: 0 };
+function pumpUnlocks() {
+  const now = performance.now();
+  if (pop.until && now < pop.until) return;
+  if (pop.until) { selUI.pop.classList.add('hidden'); pop.until = 0; }
+  if (!unlockQueue.length || game.state === 'cutscene') return;
+  const r = unlockQueue.shift();
+  selUI.pop.innerHTML = '';
+  const pc = makePortrait(r, '#1a1c2c');
+  pc.className = 'px';
+  selUI.pop.appendChild(pc);
+  const t = document.createElement('div');
+  t.innerHTML = `<b>NEW RIDER!</b><span>${r.name} · ${SKILLS[r.skill].name}</span>`;
+  selUI.pop.appendChild(t);
+  selUI.pop.classList.remove('hidden');
+  pop.until = now + CONFIG.unlockPopTime * 1000;
+  sfx.clear();
+  if (game.state === 'menu' && !selUI.panel.classList.contains('hidden')) { buildRiderGrid(); updateRiderPreview(); }
+}
+
+// HUD: the rider's skill icon (top right). Second Wind dims once it's used today.
+function drawSkillHUD(top) {
+  const r = curRider(), img = SPR['skill_' + r.skill], sz = img.width * 2;
+  const x = view.W - 12 - sz, y = top + 52;
+  ctx.fillStyle = 'rgba(10,12,22,0.55)';
+  ctx.fillRect(x - 4, y - 4, sz + 8, sz + 8);
+  ctx.globalAlpha = r.skill === 'secondWind' && game.secondWind <= 0 ? 0.25 : 1;
+  ctx.drawImage(img, x, y, sz, sz);
+  ctx.globalAlpha = 1;
+}
+
 // Start from the title: pick a rider the first time, then the intro, then ride.
 function requestRun() {
   if (!rider) { showRiderSelect(requestRun); return; }
@@ -4485,6 +4692,7 @@ function frame(now) {
   updatePedalSound(game.state === 'playing' && bike.airT <= 0 && !bike.crashed);
   const hidePause = game.state !== 'playing';
   if (ui.pauseBtn.hidden !== hidePause) ui.pauseBtn.hidden = hidePause;
+  pumpUnlocks();
   requestAnimationFrame(frame);
 }
 
