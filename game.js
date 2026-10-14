@@ -40,6 +40,7 @@ const CONFIG = {
   fullscreenOnTouch: true,   // request fullscreen when a phone player starts
 
   // Look: pixel art + fake 3D
+  typeSpeed: 38,             // cutscene typewriter, characters per second
   pixelSize: 2,              // logical units per art pixel; must divide gameWidth (2 = crisp, 4 = chunky)
   heightY: 0.75,             // how far up the screen one unit of height draws
   perspX: 0.0026,            // how much tall things lean away from the centre line
@@ -484,7 +485,7 @@ function sy(z) { return view.bikeY - (z - view.camZ); }
 // ---------------------------------------------------------------------
 // 4. GAME STATE
 // ---------------------------------------------------------------------
-// state: 'title' | 'playing' | 'crashed' | 'summary' | 'over'
+// state: 'title' | 'menu' | 'cutscene' | 'playing' | 'crashed' | 'paused' | 'summary' | 'over'
 // phase (while playing): 'route' -> 'bonus' -> 'outro'
 const game = { state: 'title' };
 const bike = { x: 200, vx: 0, spin: 0, crashed: false, airT: 0, h: 0, invuln: 0 };
@@ -530,6 +531,7 @@ function setupDay() {
   pointers.clear();
   layoutDay();
   game.speed = targetSpeed();
+  noteFurthest();
   pushBanner(DAY_NAMES[game.day], `${game.stats.subs} SUBSCRIBER${game.stats.subs === 1 ? '' : 'S'}`, COLORS.neutral, CONFIG.introTime, `${theme().name} · WEEK ${game.week}`);
 }
 
@@ -676,6 +678,7 @@ function scoreTap() {
 }
 
 canvas.addEventListener('pointerdown', (e) => {
+  if (game.state === 'cutscene') { e.preventDefault(); cutsceneTap(toLogicalX(e.clientX), toLogicalY(e.clientY)); return; }
   if (game.state !== 'playing') return;
   if (e.pointerType === 'mouse' && e.button !== 0) return;
   e.preventDefault();
@@ -732,6 +735,11 @@ window.addEventListener('keydown', (e) => {
   if (KEYS_LEFT.includes(e.code)) { input.left = true; e.preventDefault(); }
   else if (KEYS_RIGHT.includes(e.code)) { input.right = true; e.preventDefault(); }
   if (e.repeat) return;
+  if (game.state === 'cutscene') {
+    if (e.code === 'Escape') endCutscene();
+    else if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); advanceCutscene(); }
+    return;
+  }
   if (e.code === 'KeyH') { debug.hitAreas = !debug.hitAreas; return; }
   if (game.state === 'over' && overUnlocked() && (e.code === 'KeyR' || e.code === 'KeyN')) { e.code === 'KeyR' ? retryDay() : startGame(); return; }
   if (e.code === 'KeyM') { cycleMusic(); return; }
@@ -1086,6 +1094,7 @@ function spawnObstacle(z) {
 // 7. UPDATE
 // ---------------------------------------------------------------------
 function update(dt) {
+  if (game.state === 'cutscene') { updateCutscene(dt); return; }
   updateFx(dt);
   const banner = game.banners[0];
   if (banner && game.state === 'playing' && (banner.t -= dt) <= 0) game.banners.shift();
@@ -2042,6 +2051,7 @@ function drawSpriteC(img, x, y, rot) { drawSprite(img, x, y + img.height * CONFI
 
 
 function render(now) {
+  if (game.state === 'cutscene') { renderCutscene(now); return; }
   const t = now / 1000, ps = CONFIG.pixelSize;
   view.camZ = Math.round(game.dist / ps) * ps;   // snap the camera so static things don't shimmer
 
@@ -2088,7 +2098,7 @@ function render(now) {
   ctx.beginPath(); ctx.rect(0, 0, view.W, view.H); ctx.clip();
   drawPops();
   drawFlash();
-  if (game.state !== 'title') drawHUD();
+  if (game.state !== 'title' && game.state !== 'menu') drawHUD();
   drawHint(t);
   if (game.state === 'playing' || game.state === 'crashed') drawBanner();
   ctx.restore();
@@ -3249,11 +3259,12 @@ window.addEventListener('pointerdown', (e) => { lastPointerType = e.pointerType;
 function hideOverlay() { ui.overlay.classList.add('hidden'); }
 
 function showPanel(panel) {
-  for (const p of [ui.title, ui.over, ui.day, ui.pause]) p.classList.toggle('hidden', p !== panel);
+  for (const p of document.querySelectorAll('#overlay .panel')) p.classList.toggle('hidden', p !== panel);
   ui.overlay.classList.remove('hidden');
 }
 
 function showTitle() {
+  game.state = 'title';
   ui.titleBest.textContent = best;
   updateSteerUI();
   showPanel(ui.title);
@@ -3325,19 +3336,24 @@ function retryDay() {
 function overUnlocked() { return performance.now() - game.overShownAt > CONFIG.restartLock * 1000; }
 
 function continueFromSummary() {
+  const finished = game.day === DAY_NAMES.length - 1 ? game.week : 0;
   game.day++;
   if (game.day >= DAY_NAMES.length) { game.day = 0; game.week++; }   // keeps going forever
   setupDay();
-  if (tilt.enabled) calibrateTilt();
-  game.state = 'playing';
-  hideOverlay();
-  sfx.dayStart();
+  const go = () => {
+    if (tilt.enabled) calibrateTilt();
+    game.state = 'playing';
+    hideOverlay();
+    sfx.dayStart();
+  };
+  const scene = finished ? weekDone(finished) : null;   // medal + once-only cutscene at the end of a week
+  if (scene) playCutscene(scene, go); else go();
 }
 
 function tryStartFromOverlay() {
   const unlocked = performance.now() - game.overShownAt > CONFIG.restartLock * 1000;
   if (game.state === 'paused') { resumeGame(); return; }
-  if (game.state === 'title') { maybeFullscreen(); startGame(); return; }
+  if (game.state === 'title') { maybeFullscreen(); requestRun(); return; }
   if (game.state === 'summary' && unlocked) { continueFromSummary(); return; }
 }
 
@@ -3359,7 +3375,7 @@ ui.tiltBtn.addEventListener('click', async (e) => {
   sfx.click();
   if (audio.settings.music !== 'off') startMusic();   // start audio while we still have the tap
   await requestTilt();   // shows the iPhone motion prompt
-  if (game.state === 'title') startGame();
+  if (game.state === 'title') requestRun();
 });
 
 ui.retryBtn.addEventListener('click', (e) => {
@@ -3391,7 +3407,7 @@ document.querySelectorAll('.set-tilt').forEach((r) => {
 updateTiltUI();
 
 ui.overlay.addEventListener('click', (e) => {
-  if (e.target.closest('#share-btn') || e.target.closest('#tilt-btn') || e.target.closest('.audio-row') || e.target.closest('.tilt-row') || e.target.closest('#resume-btn') || e.target.closest('.over-btns')) return;
+  if (e.target.closest('#share-btn') || e.target.closest('#tilt-btn') || e.target.closest('.audio-row') || e.target.closest('.tilt-row') || e.target.closest('#resume-btn') || e.target.closest('.over-btns') || e.target.closest('.title-btns') || e.target.closest('.menu-panel')) return;
   if (game.state === 'paused') return;   // only the Resume button unpauses
   tryStartFromOverlay();
 });
@@ -3659,6 +3675,10 @@ const sfx = {
     if (!sfxOn() || !claim('tick', 2, 0.05)) return;
     noise({ filter: 'bandpass', f: 1500 + speed * 4, q: 5, dur: 0.03, vol: 0.12 * CONFIG.pedalVolume });
   },
+  type() {           // typewriter tick in cutscenes
+    if (!sfxOn() || !claim('type', 2, 0.05)) return;
+    tone({ type: 'square', f: jit(880), dur: 0.018, vol: 0.025 });
+  },
   click() {
     if (!sfxOn()) return;
     tone({ type: 'square', f: 1800, dur: 0.025, vol: 0.08 });
@@ -3800,6 +3820,656 @@ document.querySelectorAll('.set-vol').forEach((r) => {
 ui.pauseBtn.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); pauseGame(); });
 ui.resumeBtn.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); resumeGame(); });
 updateAudioUI();
+
+
+// ---------------------------------------------------------------------
+// 9c. RIDERS, CUTSCENES, MEDALS
+// Riders are cosmetic only: a palette + hairstyle applied to the bike sprite
+// and to a front-view figure used for portraits and cutscenes. Cutscenes are
+// small pixel scenes drawn into the art buffer, with a typewriter dialogue
+// box on top: tap to advance, SKIP in the corner. Progress (rider, medals,
+// cutscenes seen, furthest week) is saved in localStorage.
+// ---------------------------------------------------------------------
+const RIDER_KEY = 'routeRush.rider';
+const PROGRESS_KEY = 'routeRush.progress';
+
+const RIDERS = [
+  { id: 'jada', name: 'JADA', skin: '#5c3a24', hair: '#17110e', style: 'afro', helmet: '#ff8c42', shirt: '#2ec4b6', pants: '#34495e' },
+  { id: 'marcus', name: 'MARCUS', skin: '#7a4a2c', hair: '#21160f', style: 'locs', helmet: '#d64545', shirt: '#ffd23f', pants: '#2b2b35' },
+  { id: 'aaliyah', name: 'AALIYAH', skin: '#8f5b3a', hair: '#1a1210', style: 'braids', helmet: '#9b5de5', shirt: '#f15bb5', pants: '#34495e' },
+  { id: 'mateo', name: 'MATEO', skin: '#c48a5c', hair: '#3a2416', style: 'curly', helmet: '#3fa34d', shirt: '#ff8c42', pants: '#3b4a6b' },
+  { id: 'ethan', name: 'ETHAN', skin: '#f2c8a0', hair: '#d9b45a', style: 'straight', helmet: '#3a7bd5', shirt: '#d64545', pants: '#2b2b35' },
+  { id: 'kenji', name: 'KENJI', skin: '#e6b88a', hair: '#15151a', style: 'buzz', helmet: '#ffd23f', shirt: '#3a7bd5', pants: '#4a4a55' },
+  { id: 'emma', name: 'EMMA', skin: '#f8dcc8', hair: '#b5502a', style: 'ponytail', helmet: '#f15bb5', shirt: '#7fd0c4', pants: '#34495e' },
+  { id: 'amira', name: 'AMIRA', skin: '#a8714a', hair: '#7a2d4a', style: 'hijab', helmet: '#f7f4ea', shirt: '#3fa3a0', pants: '#2b2b35' },
+];
+function hairShade(hex) {   // texture color: lighter for dark hair, darker for light hair
+  const n = parseInt(hex.slice(1), 16), lum = 0.3 * (n >> 16) + 0.59 * ((n >> 8) & 255) + 0.11 * (n & 255);
+  return lum < 90 ? shade(hex, 1.25) : shade(hex, 0.72);
+}
+
+// Hair seen from above/behind on the bike sprite: [row, col, pixels] over
+// RIDER_TOP (spaces leave the pixel alone). Ponytail has a sway frame.
+const TOP_HAIR = {
+  buzz: [],
+  straight: [[7, 4, 'hhhh'], [8, 5, 'hh']],
+  afro: [[3, 4, 'h  h'], [4, 3, 'h    h'], [5, 3, 'h    h'], [6, 3, 'h    h'], [7, 3, 'hhhhhh'], [8, 4, 'hhhh']],
+  locs: [[7, 4, 'hhhh'], [8, 4, 'hHhH'], [9, 4, 'hHhH'], [10, 4, 'h H ']],
+  braids: [[7, 4, 'hhhh'], [8, 4, 'H  H'], [9, 4, 'h  h'], [10, 4, 'H  H'], [11, 4, 'a  a']],
+  curly: [[5, 3, 'h    h'], [6, 3, 'H    H'], [7, 4, 'hHhH'], [8, 4, 'HhHh'], [9, 5, 'h']],
+  hijab: [[4, 3, 'j    j'], [5, 3, 'j    j'], [6, 3, 'j    j'], [7, 3, 'jjjjjj'], [8, 3, 'jJJJJj'], [9, 4, 'JJJJ']],
+  ponytail: [[7, 5, 'hh'], [8, 5, 'h'], [9, 4, 'H'], [10, 4, 'h']],
+  ponytailB: [[7, 5, 'hh'], [8, 6, 'h'], [9, 7, 'H'], [10, 7, 'h']],
+};
+function riderTopSprite(r, frame) {
+  const rows = SPRITE_ART[frame ? 'riderB' : 'riderA'].map((row) => row.split(''));
+  for (const [y, x, str] of TOP_HAIR[r.style === 'ponytail' && frame ? 'ponytailB' : r.style]) {
+    for (let i = 0; i < str.length; i++) if (str[i] !== ' ') rows[y][x + i] = str[i];
+  }
+  return spriteFromArt(rows.map((row) => row.join('')), {
+    ...PAL, s: r.skin, c: r.helmet, o: r.shirt, O: shade(r.shirt, 0.78), n: r.pants,
+    h: r.hair, H: hairShade(r.hair), j: r.hair, J: shade(r.hair, 0.75),
+  });
+}
+
+// Front-view figure, 16x26 art pixels (+1 outline). Options: skin, hair,
+// style, helmet, shirt, pants, suit (torso color; jacket: sleeves too), tie,
+// sash, glasses, mustache, bag, medal, armsUp, back (seen from behind).
+const SKIN_TONES = ['#f8dcc8', '#f2c8a0', '#e0ac7e', '#c48a5c', '#a8714a', '#8f5b3a', '#6e4a32', '#5c3a24'];
+const personCache = new Map();
+function makePerson(o) {
+  const key = JSON.stringify(o);
+  if (personCache.has(key)) return personCache.get(key);
+  const W = 18, H = 28, g = new Array(W * H);
+  const set = (x, y, c) => { if (c && x >= 0 && x < 16 && y >= 0 && y < 26) g[(y + 1) * W + x + 1] = c; };
+  const rect = (x0, y0, x1, y1, c) => { for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) set(x, y, c); };
+  const ell = (cx, cy, rx, ry, c, c2) => {
+    for (let y = 0; y < 26; y++) for (let x = 0; x < 16; x++) {
+      if (((x + 0.5 - cx) / rx) ** 2 + ((y + 0.5 - cy) / ry) ** 2 <= 1) set(x, y, c2 && (x * 2 + y) % 5 === 0 ? c2 : c);
+    }
+  };
+  const skin = o.skin, hair = o.hair, hair2 = hairShade(hair), st = o.style;
+  const hasHair = !['bald', 'buzz', 'short'].includes(st);
+
+  // Hair behind the head
+  if (st === 'afro') ell(8, 6.5, 7.6, 6.8, hair, hair2);
+  else if (st === 'curly') ell(8, 6.5, 6.4, 6.2, hair, hair2);
+  else if (st === 'locs') { rect(3, 3, 12, 8, hair); for (let x = 3; x <= 12; x++) for (let y = 9; y <= 14 + (x % 3); y++) set(x, y, x % 2 ? hair : hair2); }
+  else if (st === 'braids') { rect(3, 3, 12, 9, hair); for (let y = 10; y <= 17; y++) { set(3, y, y % 2 ? hair : hair2); set(12, y, y % 2 ? hair : hair2); } set(3, 18, '#ffd23f'); set(12, 18, '#ffd23f'); }
+  else if (st === 'straight') { rect(3, 3, 12, 14, hair); rect(3, 6, 3, 14, hair2); rect(12, 6, 12, 14, hair2); }
+  else if (st === 'ponytail') { rect(3, 3, 12, 8, hair); for (const [x, y] of [[13, 5], [13, 6], [14, 7], [14, 8], [14, 9], [14, 10], [13, 11], [14, 11], [13, 12]]) set(x, y, hair); set(13, 5, '#ffd23f'); }
+  else if (st === 'hijab') { rect(3, 3, 12, 14, hair); rect(2, 12, 13, 15, hair); }
+
+  // Head
+  const headC = o.back && hasHair ? hair : skin;
+  rect(5, 4, 10, 11, headC); rect(4, 5, 11, 10, headC);
+  if (['buzz', 'short', 'bald', 'ponytail'].includes(st)) { set(3, 8, skin); set(12, 8, skin); }   // ears
+  if (st === 'hijab') { rect(4, 4, 11, 5, hair); rect(4, 6, 4, 11, hair); rect(11, 6, 11, 11, hair); rect(5, 12, 10, 12, hair); if (o.back) rect(5, 6, 10, 11, hair); }
+  if (o.helmet) {
+    const hc = o.helmet;
+    rect(5, 1, 10, 1, hc); rect(4, 2, 11, 2, hc); rect(3, 3, 12, 4, hc); rect(3, 5, 12, 5, shade(hc, 0.72));
+    rect(7, 1, 8, 4, shade(hc, 0.85)); set(5, 2, shade(hc, 1.5)); set(4, 3, shade(hc, 1.5));
+    if (hasHair && st !== 'hijab' && st !== 'afro') { set(4, 6, hair); set(11, 6, hair); }
+  } else if (st === 'bald') { rect(4, 6, 4, 8, hair); rect(11, 6, 11, 8, hair); }
+  else if (st !== 'hijab') {
+    rect(5, 3, 10, 3, hair); rect(4, 4, 11, 4, hair); set(4, 5, hair); set(11, 5, hair);
+    if (hasHair) rect(5, 5, 7, 5, hair);   // fringe
+  }
+  if (!o.back) {
+    set(6, 8, PAL.k); set(9, 8, PAL.k);
+    set(5, 9, shade(skin, 1.12)); set(10, 9, shade(skin, 1.12));
+    set(7, 10, '#8a3b3b'); set(8, 10, '#8a3b3b');
+    if (o.glasses) { rect(5, 7, 7, 9, PAL.k); rect(8, 7, 10, 9, PAL.k); set(6, 8, '#bfe3ff'); set(9, 8, '#bfe3ff'); }
+    if (o.mustache) rect(6, 10, 9, 10, hair);
+  }
+  rect(7, 12, 8, 12, st === 'hijab' ? hair : skin);   // neck
+
+  // Body
+  const sh = o.shirt, torso = o.suit || sh, sleeve = o.jacket ? o.suit : sh;
+  rect(4, 13, 11, 19, torso); rect(4, 13, 4, 19, shade(torso, 0.78)); rect(11, 13, 11, 19, shade(torso, 0.78));
+  if (o.suit && !o.back) { set(7, 13, '#f7f4ea'); set(8, 13, '#f7f4ea'); if (o.tie) rect(7, 14, 8, 17, o.tie); }
+  if (st === 'hijab') rect(3, 13, 12, 15, hair);
+  if (o.sash && !o.back) for (let i = 0; i < 8; i++) { const y = 13 + Math.round(i * 0.85); set(4 + i, y, o.sash); set(4 + i, y + 1, shade(o.sash, 0.8)); }
+  if (o.armsUp) {
+    rect(2, 10, 3, 13, sleeve); rect(1, 7, 2, 9, sleeve); rect(1, 5, 2, 6, skin);   // arms up in a V
+    rect(12, 10, 13, 13, sleeve); rect(13, 7, 14, 9, sleeve); rect(13, 5, 14, 6, skin);
+  } else {
+    rect(2, 13, 3, 18, sleeve); rect(12, 13, 13, 18, sleeve); rect(2, 19, 3, 19, skin); rect(12, 19, 13, 19, skin);
+  }
+  if (o.bag && !o.back) {
+    for (let i = 0; i < 6; i++) set(5 + i, 13 + i, PAL.Y);
+    rect(11, 17, 14, 21, PAL.y); rect(11, 17, 14, 17, PAL.Y); rect(12, 16, 13, 16, PAL.e);
+  }
+  if (o.medal && !o.back) {
+    set(6, 13, '#d64545'); set(7, 14, '#d64545'); set(9, 13, '#3a7bd5'); set(8, 14, '#3a7bd5');
+    rect(6, 15, 9, 17, o.medal); set(7, 15, shade(o.medal, 1.45)); set(9, 17, shade(o.medal, 0.7));
+  }
+  const pants = o.pants;
+  rect(4, 20, 11, 20, shade(pants, 0.7)); rect(4, 21, 11, 21, pants); rect(4, 22, 6, 24, pants); rect(9, 22, 11, 24, pants);
+  rect(3, 25, 6, 25, '#3a3a40'); rect(9, 25, 12, 25, '#3a3a40');
+
+  const c = spriteFromFn(W, H, (px) => {
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const col = g[y * W + x];
+      if (col) px(x, y, col);
+      else if (g[y * W + x - 1] && x > 0 || g[y * W + x + 1] && x < W - 1 || g[(y - 1) * W + x] || g[(y + 1) * W + x]) px(x, y, PAL.k);
+    }
+  });
+  personCache.set(key, c);
+  return c;
+}
+function riderPerson(r, extra) { return makePerson({ skin: r.skin, hair: r.hair, style: r.style, helmet: r.helmet, shirt: r.shirt, pants: r.pants, ...extra }); }
+
+// Head-and-shoulders portrait for the select screen (its own canvas).
+function makePortrait(r, bg) {
+  const src = riderPerson(r, {}), c = makeCanvas(18, 18), g = c.getContext('2d');
+  g.fillStyle = bg; g.fillRect(0, 0, 18, 18);
+  g.drawImage(src, 0, 0, 18, 18, 0, 1, 18, 18);
+  return c;
+}
+
+// Medal icon 14x20; locked = gray silhouette.
+function makeMedal(color, locked) {
+  return spriteFromFn(14, 20, (px) => {
+    const rib = locked ? ['#4a4f5a', '#3e434d'] : ['#d64545', '#3a7bd5'];
+    for (let y = 0; y < 8; y++) { px(3 + (y >> 1), y, rib[0]); px(4 + (y >> 1), y, rib[0]); px(10 - (y >> 1), y, rib[1]); px(9 - (y >> 1), y, rib[1]); }
+    const main = locked ? '#5a5f6a' : color, dark = locked ? '#3e434d' : shade(color, 0.68), lite = locked ? '#5a5f6a' : shade(color, 1.45);
+    for (let y = 8; y < 20; y++) for (let x = 0; x < 14; x++) {
+      const d = ((x + 0.5 - 7) / 6) ** 2 + ((y + 0.5 - 14) / 6) ** 2;
+      if (d <= 1) px(x, y, d > 0.62 ? dark : (x < 7 && y < 13 ? lite : main));
+    }
+    if (!locked) for (const [x, y] of [[7, 11], [6, 13], [7, 13], [8, 13], [5, 13], [9, 13], [6, 14], [7, 14], [8, 14], [6, 15], [8, 15]]) px(x, y, lite);   // star
+  });
+}
+const MEDALS = [
+  { id: 'bronze', name: 'BRONZE', week: 1, color: '#cd7f32' },
+  { id: 'silver', name: 'SILVER', week: 2, color: '#c9d1da' },
+  { id: 'gold', name: 'GOLD', week: 3, color: '#ffd23f' },
+];
+SPR.key = spriteFromArt([
+  '.aaa..............',
+  'a...a.............',
+  'a...aaaaaaaaaaaaaa',
+  'a...a........a.a.a',
+  '.aaa.........a.a..',
+], { a: '#ffd23f' });
+
+// --- Saved choices + progress ---
+let rider = RIDERS.find((r) => r.id === storage.get(RIDER_KEY, '')) || null;
+const progress = (() => {
+  const base = { seen: {}, medals: {}, furthest: 0, weeksDone: 0 };
+  try { return { ...base, ...JSON.parse(storage.get(PROGRESS_KEY, '{}')) }; } catch (e) { return base; }
+})();
+function saveProgress() { storage.set(PROGRESS_KEY, JSON.stringify(progress)); }
+function curRider() { return rider || RIDERS[0]; }
+function applyRider() {
+  const r = curRider();
+  SPR.riderA = riderTopSprite(r, 0);
+  SPR.riderB = riderTopSprite(r, 1);
+}
+applyRider();
+function noteFurthest() {   // called each new day
+  const n = (game.week - 1) * DAY_NAMES.length + game.day;
+  if (n > progress.furthest) { progress.furthest = n; saveProgress(); }
+}
+// A week was finished: award its medal, return the cutscene to play (or null).
+function weekDone(w) {
+  const m = MEDALS.find((md) => md.week === w);
+  if (m) progress.medals[m.id] = 1;
+  progress.weeksDone = Math.max(progress.weeksDone, w);
+  const id = 'week' + w;
+  const play = !progress.seen[id];
+  progress.seen[id] = 1;
+  saveProgress();
+  return play ? id : null;
+}
+
+// --- Cutscene scripts ---
+// Each step: one line of dialogue + what the scene shows. Short on purpose.
+const MAYOR = { skin: '#c99a6e', hair: '#b8bcc6', style: 'short', suit: '#2d3a4a', jacket: true, shirt: '#f7f4ea', tie: '#d64545', sash: '#ffd23f', mustache: true, pants: '#2d3a4a' };
+const BOSS = { skin: '#6e4a32', hair: '#9aa0a8', style: 'bald', glasses: true, shirt: '#f7f4ea', suit: '#7a4a28', tie: '#3a7bd5', pants: '#3b3b44' };
+function cutsceneScript(id) {
+  const me = curRider().name;
+  if (id === 'intro') return { scene: 'office', steps: [
+    { who: 'BOSS', text: 'So you\'re the new carrier! Welcome to the Daily Route.' },
+    { who: 'BOSS', text: 'Seven neighborhoods. Every morning. Rain or shine.' },
+    { who: 'BOSS', text: 'Kansas City\'s counting on you. Don\'t miss a porch.', bag: true },
+    { who: me, text: 'I won\'t let you down!', bag: true, cheer: true },
+  ] };
+  if (id === 'week1') return { scene: 'stage', steps: [
+    { who: '', text: 'One week later... a ceremony downtown!' },
+    { who: 'MAYOR', text: 'Every porch, every morning. This city noticed.' },
+    { who: 'MAYOR', text: 'For outstanding delivery service to Kansas City!', medal: 'bronze', pin: true },
+    { who: me, text: 'Thank you! See you on the route!', medal: 'bronze', cheer: true },
+  ] };
+  if (id === 'week2') return { scene: 'stage', steps: [
+    { who: 'MAYOR', text: 'Two weeks! The porches have never looked happier.' },
+    { who: 'MAYOR', text: 'Please accept this silver medal...', medal: 'silver', pin: true },
+    { who: 'MAYOR', text: '...and the Key to the City!', medal: 'silver', key: true },
+    { who: me, text: 'Does it open the newspaper office?', medal: 'silver', key: true, cheer: true },
+  ] };
+  if (id === 'week3') return { scene: 'stage', steps: [
+    { who: 'MAYOR', text: 'Three weeks! Kansas City has never been better read.' },
+    { who: 'MAYOR', text: 'The gold medal. You earned every inch of it.', medal: 'gold', pin: true },
+    { who: '', text: 'And the whole city came out for a parade!', medal: 'gold', parade: true },
+    { who: me, text: 'Same time tomorrow, everybody!', medal: 'gold', parade: true },
+  ] };
+  const n = parseInt(id.slice(4), 10) || 4;
+  return { scene: 'party', week: n, steps: [
+    { who: '', text: `WEEK ${n} COMPLETE!` },
+    { who: me, text: pick(['On to the next one!', 'Papers never sleep!', 'Fresh week, fresh porches!', 'Kansas City, here I come again!']), cheer: true },
+  ] };
+}
+const CUTSCENE_TITLES = { intro: 'THE NEW HIRE', week1: 'BRONZE', week2: 'SILVER + KEY', week3: 'GOLD PARADE' };
+
+const cs = { id: '', script: null, step: 0, typed: 0, stepT: 0, t: 0, done: null, lastBlip: 0 };
+function playCutscene(id, done) {
+  Object.assign(cs, { id, script: cutsceneScript(id), step: 0, typed: 0, stepT: 0, t: 0, done, lastBlip: 0 });
+  progress.seen[id] = 1;
+  saveProgress();
+  game.state = 'cutscene';
+  pointers.clear();
+  hideOverlay();
+  if (audio.settings.music !== 'off') startMusic();   // still inside the tap that got us here
+  stepSound();
+}
+function stepSound() {
+  const st = cs.script.steps[cs.step];
+  if (st.pin) setTimeout(() => sfx.perfect(), 350);
+  else if (st.key || (st.parade && cs.step > 0 && !cs.script.steps[cs.step - 1].parade)) sfx.clear();
+  else if (cs.script.scene === 'party' && cs.step === 0) sfx.perfect();
+}
+function updateCutscene(dt) {
+  cs.t += dt; cs.stepT += dt;
+  const text = cs.script.steps[cs.step].text;
+  if (cs.typed < text.length) {
+    cs.typed = Math.min(text.length, cs.typed + dt * CONFIG.typeSpeed);
+    if (cs.t - cs.lastBlip > 0.07 && text[Math.floor(cs.typed) - 1] !== ' ') { cs.lastBlip = cs.t; sfx.type(); }
+  }
+}
+function advanceCutscene() {
+  const text = cs.script.steps[cs.step].text;
+  if (cs.typed < text.length) { cs.typed = text.length; return; }
+  if (cs.step + 1 >= cs.script.steps.length) { endCutscene(); return; }
+  cs.step++; cs.typed = 0; cs.stepT = 0;
+  stepSound();
+}
+function endCutscene() {
+  if (game.state !== 'cutscene') return;
+  const done = cs.done;
+  cs.done = null;
+  game.state = 'menu';
+  if (done) done();
+}
+function skipRect() { return { x: view.W - 78, y: view.safeTop + 10, w: 68, h: 28 }; }
+function cutsceneTap(x, y) {
+  const r = skipRect();
+  if (x >= r.x - 8 && x <= r.x + r.w + 8 && y >= r.y - 8 && y <= r.y + r.h + 8) { sfx.click(); endCutscene(); return; }
+  advanceCutscene();
+}
+
+// --- Cutscene drawing (art-pixel coordinates in the buffer) ---
+const DIALOG_H = 150;
+function cr(x, y, w, h, c) { pix.fillStyle = c; pix.fillRect(PAD + Math.round(x), PAD + Math.round(y), Math.round(w), Math.round(h)); }
+function cimg(img, x, y, s = 1) { pix.drawImage(img, PAD + Math.round(x), PAD + Math.round(y), img.width * s, img.height * s); }
+const CONFETTI = ['#ffd23f', '#ff5a5f', '#2ec4b6', '#3a7bd5', '#f15bb5', '#ffffff', '#7fd0c4'];
+function confetti(t, AW, SH, n) {
+  for (let i = 0; i < n; i++) {
+    const sp = 18 + hash(i, 2) * 30, y = (t * sp + hash(i, 3) * SH) % SH - 4;
+    const x = (hash(i, 1) * AW + Math.sin(t * 2 + i) * 4 + AW) % AW;
+    cr(x, y, (i + Math.floor(t * 6)) % 3 ? 2 : 1, 2, CONFETTI[i % CONFETTI.length]);
+  }
+}
+const crowdCache = [];
+function crowdPerson(i, up) {
+  const k = i % 12;
+  if (!crowdCache[k]) {
+    const rng = mulberry32(900 + k * 37);
+    const styles = ['afro', 'curly', 'straight', 'short', 'ponytail', 'braids', 'hijab', 'locs', 'bald', 'buzz'];
+    const base = {
+      skin: pickR(SKIN_TONES, rng), hair: pickR(['#17110e', '#3a2416', '#6b4226', '#d9b45a', '#b5502a', '#2a2a30', '#9aa0a8', '#7a2d4a', '#2f6db5'], rng),
+      style: pickR(styles, rng), shirt: pickR(['#ff5a5f', '#2ec4b6', '#ffd23f', '#9b5de5', '#3a7bd5', '#ff8c42', '#3fa34d', '#f15bb5'], rng), pants: '#34495e', back: true,
+    };
+    crowdCache[k] = [makePerson(base), makePerson({ ...base, armsUp: true })];
+  }
+  return crowdCache[k][up ? 1 : 0];
+}
+// Rows of cheering heads seen from behind, bobbing; only the top shows.
+function drawCrowdRow(t, AW, y, seed, cheer) {
+  for (let i = 0; i < 9; i++) {
+    const x = i * 26 - 12 + ((seed * 13) % 17);
+    const up = cheer && Math.floor(t * 3 + hash(i, seed) * 4) % 2 === 0;
+    const bob = Math.round(Math.abs(Math.sin(t * 6 + i * 1.7 + seed)) * (cheer ? 3 : 1));
+    cimg(crowdPerson(i + seed * 3, up), x, y - bob, 2);
+  }
+}
+function drawSkyline(AW, base, cols) {   // generic downtown silhouette, no real buildings
+  for (let i = 0; i < 12; i++) {
+    const w = 14 + Math.floor(hash(i, 5) * 14), h = 30 + Math.floor(hash(i, 6) * 60), x = i * 18 - 6;
+    cr(x, base - h, w, h, cols[i % cols.length]);
+    for (let wy = base - h + 4; wy < base - 4; wy += 6) for (let wx = x + 3; wx < x + w - 2; wx += 5) {
+      if (hash(wx, wy) > 0.45) cr(wx, wy, 2, 3, '#ffe9a8');
+    }
+  }
+}
+
+function sceneOffice(t, st, AW, SH) {
+  const floorY = Math.round(SH * 0.78);
+  cr(0, 0, AW, floorY, '#7c6a58');                    // wall
+  cr(0, floorY - 24, AW, 24, '#5e4c3c');              // wainscot
+  cr(0, floorY - 25, AW, 1, '#a08870');
+  // Window with a city view
+  const wx = 18, wy = Math.round(SH * 0.12), ww = 74, wh = Math.round(SH * 0.34);
+  cr(wx - 3, wy - 3, ww + 6, wh + 6, '#3b2c22');
+  cr(wx, wy, ww, wh, '#8fc8e8');
+  pix.save(); pix.beginPath(); pix.rect(PAD + wx, PAD + wy, ww, wh); pix.clip();
+  drawSkyline(AW, wy + wh, ['#5b6b80', '#4a586b', '#6a7a90']);
+  pix.restore();
+  cr(wx + ww / 2 - 1, wy, 2, wh, '#3b2c22'); cr(wx, wy + wh / 2 - 1, ww, 2, '#3b2c22');
+  // Masthead sign for the (made-up) paper
+  cr(112, wy, 72, 20, '#f7f4ea'); cr(112, wy + 20, 72, 2, '#1a1c2c');
+  for (let i = 0; i < 6; i++) cr(116 + i * 11, wy + 6, 8, 3, '#1a1c2c');
+  cr(116, wy + 13, 64, 2, '#d64545');
+  // Floor + paper stacks
+  cr(0, floorY, AW, SH - floorY, '#4a3a2e');
+  for (let i = 0; i < AW; i += 16) cr(i, floorY, 1, SH - floorY, '#3e3026');
+  for (const [x, n] of [[8, 5], [24, 3], [176, 6]]) for (let k = 0; k < n; k++) { cr(x, floorY + 8 - k * 4, 14, 4, k % 2 ? '#e8e2d0' : '#f7f4ea'); cr(x, floorY + 11 - k * 4, 14, 1, '#b8b0a0'); }
+  // Boss behind the desk
+  const deskY = floorY - 18, bossX = 113;
+  cimg(makePerson(BOSS), bossX, deskY - 56, 3);
+  cr(96, deskY, 88, 30, '#6b4226'); cr(96, deskY, 88, 4, '#8a5a36'); cr(100, deskY + 8, 80, 1, '#4a2e1a');
+  cr(104, deskY - 6, 18, 6, '#f7f4ea'); cr(104, deskY - 3, 18, 1, '#b8b0a0');   // papers on the desk
+  cr(160, deskY - 8, 10, 8, '#d64545'); cr(163, deskY - 11, 4, 3, '#2b2b35');   // mug + phone-ish
+  // Rider; the bag slides over on the hand-off step
+  const handed = st.bag, k = handed ? clamp(cs.stepT / 0.6, 0, 1) : 0;
+  const hop = st.cheer ? Math.round(Math.abs(Math.sin(cs.stepT * 8)) * 3) : 0;
+  cimg(riderPerson(curRider(), { bag: handed && k >= 1, armsUp: !!st.cheer }), 22, floorY - 72 - hop, 3);
+  if (handed && k < 1) {
+    const bx0 = lerp(bossX - 4, 58, k), by0 = lerp(deskY - 14, floorY - 30, k) - Math.sin(k * Math.PI) * 14;
+    cr(bx0, by0, 10, 10, PAL.y); cr(bx0, by0, 10, 2, PAL.Y); cr(bx0 + 2, by0 - 2, 6, 2, PAL.e);
+  }
+}
+
+function sceneStage(t, st, AW, SH) {
+  if (st.parade) { sceneParade(t, st, AW, SH); return; }
+  // Dusk sky + downtown
+  const bands = ['#2b3a67', '#3e4f86', '#6a5f9e', '#c0749a', '#f0a070'];
+  const skyH = Math.round(SH * 0.62);
+  for (let i = 0; i < bands.length; i++) cr(0, Math.round(i * skyH / bands.length), AW, Math.ceil(skyH / bands.length), bands[i]);
+  drawSkyline(AW, skyH, ['#2a2f45', '#353a55', '#232838']);
+  cr(0, skyH, AW, SH - skyH, '#3a3f4e');
+  // Stage with bunting
+  const stageY = Math.round(SH * 0.72);
+  cr(14, stageY, AW - 28, 14, '#8a5a36'); cr(14, stageY, AW - 28, 3, '#b07a4a');
+  cr(14, stageY + 14, AW - 28, SH - stageY, '#5a3a24');
+  for (let x = 20; x < AW - 20; x += 10) { cr(x, stageY + 4, 6, 3, ['#d64545', '#f7f4ea', '#3a7bd5'][(x / 10) % 3 | 0]); cr(x + 2, stageY + 7, 2, 2, ['#d64545', '#f7f4ea', '#3a7bd5'][(x / 10) % 3 | 0]); }
+  // Banner poles + streamer
+  const top = Math.max(6, stageY - 112);
+  cr(10, top, 3, stageY - top, '#2b2b35'); cr(AW - 13, top, 3, stageY - top, '#2b2b35');
+  cr(13, top + 4, AW - 26, 12, '#d64545'); cr(13, top + 4, AW - 26, 2, '#ff8a8a');
+  for (let x = 22; x < AW - 22; x += 12) cr(x, top + 8, 6, 4, '#ffd23f');
+  // Mayor and rider on stage
+  const m = MEDALS.find((md) => md.id === st.medal);
+  const pinK = st.pin ? clamp((cs.stepT - 0.2) / 0.6, 0, 1) : 1;
+  const hop = st.cheer ? Math.round(Math.abs(Math.sin(cs.stepT * 8)) * 3) : 0;
+  const rx = 34, mx = 112, py = stageY - 80;
+  cimg(makePerson(MAYOR), mx, py, 3);
+  cimg(riderPerson(curRider(), { medal: m && pinK >= 1 ? m.color : undefined, armsUp: !!(st.cheer || st.key) }), rx, py - hop, 3);
+  if (m && pinK < 1) {   // medal travels from the mayor's hand to the rider
+    const x = lerp(mx + 2, rx + 20, pinK), y = lerp(py + 50, py + 40, pinK) - Math.sin(pinK * Math.PI) * 14;
+    cimg(makeMedal(m.color, false), x, y);
+  }
+  if (st.key) {   // key held up high, glinting
+    const kx = rx, ky = py - 12 - hop + Math.round(Math.sin(cs.stepT * 4));
+    cimg(SPR.key, kx, ky, 3);
+    if (Math.floor(cs.t * 4) % 2) { cr(kx - 4, ky - 4, 2, 2, '#ffffff'); cr(kx + 50, ky + 12, 2, 2, '#ffffff'); }
+  }
+  // Crowd in front + confetti
+  drawCrowdRow(t, AW, SH - 40, 1, true);
+  drawCrowdRow(t, AW, SH - 22, 2, true);
+  confetti(t, AW, SH, m && pinK >= 1 ? 70 : 24);
+}
+
+// Gold-week parade: the gameplay street seen from above, crowds both sides.
+function sceneParade(t, st, AW, SH) {
+  const scroll = (cs.t * 60) % 24;
+  cr(0, 0, AW, SH, '#9a9a8e');                     // sidewalks
+  cr(52, 0, AW - 104, SH, '#4a4f5a');              // street
+  cr(50, 0, 2, SH, '#d8d4c4'); cr(AW - 52, 0, 2, SH, '#d8d4c4');
+  for (let y = -24 + scroll; y < SH; y += 24) cr(AW / 2 - 1, y, 2, 12, '#ffd23f');
+  for (let y = -40 + (cs.t * 60) % 40; y < SH; y += 40) { cr(0, y, 16, 34, '#b8613f'); cr(AW - 16, y, 16, 34, '#6a7a90'); cr(0, y + 34, 16, 6, '#7a4a28'); cr(AW - 16, y + 34, 16, 6, '#4a586b'); }
+  for (let y = -16 + scroll * 0.66; y < SH; y += 16) {   // cheering fans along both curbs
+    for (const [x, flip] of [[24, 0], [34, 1], [AW - 26, 0], [AW - 36, 1]]) {
+      const i = Math.round(y / 16) + x, jump = Math.floor(t * 6 + i) % 2 ? 1 : 0;
+      cimg(flip ? SPR.crowdG : SPR.crowdR, x - 4, y - jump);
+    }
+  }
+  // Balloons drifting up
+  for (let i = 0; i < 6; i++) {
+    const y = SH - ((cs.t * 22 + hash(i, 8) * SH) % (SH + 20)), x = 60 + hash(i, 9) * (AW - 120) + Math.sin(cs.t + i) * 3;
+    cr(x, y, 5, 6, CONFETTI[i]); cr(x + 2, y + 6, 1, 6, '#e8e8e8');
+  }
+  const pedal = Math.floor(cs.t * 5) % 2;
+  cimg(pedal ? SPR.riderB : SPR.riderA, AW / 2 - 12, SH * 0.55 + Math.sin(cs.t * 2) * 2, 2);
+  confetti(t, AW, SH, 60);
+}
+
+function sceneParty(t, st, AW, SH) {
+  cr(0, 0, AW, SH, '#141a33');
+  for (let i = 0; i < 30; i++) cr(hash(i, 11) * AW, hash(i, 12) * SH * 0.6, 1, 1, Math.floor(t * 2 + i) % 3 ? '#ffffff' : '#7a86b8');
+  const base = Math.round(SH * 0.74);
+  drawSkyline(AW, base, ['#1e2440', '#262d4d', '#1a1f38']);
+  cr(0, base, AW, SH - base, '#2a2f45');
+  for (let k = 0; k < 4; k++) {   // fireworks
+    const period = 1.6, ph = (cs.t + k * 0.45) % period, cycle = Math.floor((cs.t + k * 0.45) / period);
+    const cx = 25 + hash(k, cycle) * (AW - 50), cy = 20 + hash(k + 9, cycle) * SH * 0.35;
+    const col = CONFETTI[(k + cycle) % CONFETTI.length];
+    if (ph < 0.4) { cr(cx, cy + (0.4 - ph) * 150, 1, 3, '#ffe9a8'); continue; }
+    const r = (ph - 0.4) * 30, fade = ph > 1.2;
+    for (let a = 0; a < 12; a++) cr(cx + Math.cos(a * 0.5236) * r, cy + Math.sin(a * 0.5236) * r + (ph - 0.4) * 6, fade ? 1 : 2, fade ? 1 : 2, col);
+  }
+  const hop = Math.round(Math.abs(Math.sin(cs.t * 7)) * 6);
+  cimg(riderPerson(curRider(), { armsUp: true, medal: progress.medals.gold ? '#ffd23f' : undefined }), AW / 2 - 27, base - 78 - hop, 3);
+  confetti(t, AW, SH, 40);
+}
+
+function renderCutscene(now) {
+  const t = now / 1000, ps = CONFIG.pixelSize;
+  const AW = view.W / ps, SH = Math.round((view.H - DIALOG_H) / ps), AH = view.H / ps;
+  const st = cs.script.steps[cs.step];
+  pix.fillStyle = '#10141f';
+  pix.fillRect(0, 0, buf.width, buf.height);
+  ({ office: sceneOffice, stage: sceneStage, party: sceneParty })[cs.script.scene](t, st, AW, SH);
+  cr(0, SH, AW, AH - SH, '#10141f');
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const s = view.scale * view.dpr;
+  ctx.setTransform(s, 0, 0, s, view.offX * view.dpr, view.offY * view.dpr);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(buf, PAD, PAD, view.W / ps, view.H / ps, 0, 0, view.W, view.H);
+
+  // Dialogue box
+  const bx0 = 10, by0 = view.H - DIALOG_H + 6, bw = view.W - 20, bh = DIALOG_H - 18;
+  ctx.fillStyle = PAL.k; ctx.fillRect(bx0 - 4, by0 - 4, bw + 8, bh + 8);
+  ctx.fillStyle = '#f6f3ea'; ctx.fillRect(bx0, by0, bw, bh);
+  ctx.fillStyle = '#2a3346'; ctx.fillRect(bx0 + 4, by0 + 4, bw - 8, bh - 8);
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  let ty = by0 + 16;
+  if (st.who) {
+    ctx.font = `10px ${FONT}`;
+    textShadowed(st.who, bx0 + 16, ty, COLORS.perfect);
+    ty += 22;
+  }
+  ctx.font = `11px ${FONT}`;
+  const shown = st.text.slice(0, Math.floor(cs.typed));
+  for (const line of wrapText(st.text, bw - 32).map((l, i, all) => {   // wrap the full text so words don't jump lines while typing
+    const start = all.slice(0, i).reduce((n, x) => n + x.length + 1, 0);
+    return shown.slice(start, start + l.length);
+  })) { textShadowed(line, bx0 + 16, ty, '#ffffff'); ty += 20; }
+  if (cs.typed >= st.text.length && Math.floor(t * 2.5) % 2) {
+    ctx.fillStyle = COLORS.perfect;
+    const ax = bx0 + bw - 24, ay = by0 + bh - 20;
+    ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(ax + 10, ay); ctx.lineTo(ax + 5, ay + 6); ctx.fill();
+  }
+  ctx.font = `7px ${FONT}`;
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.fillText(`${cs.step + 1}/${cs.script.steps.length}`, bx0 + 16, by0 + bh - 16);
+
+  // Skip button
+  const r = skipRect();
+  ctx.fillStyle = PAL.k; ctx.fillRect(r.x, r.y, r.w, r.h);
+  ctx.fillStyle = '#2a3346'; ctx.fillRect(r.x + 3, r.y + 3, r.w - 6, r.h - 6);
+  ctx.font = `9px ${FONT}`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText('SKIP ▸', r.x + r.w / 2, r.y + r.h / 2 + 1);
+}
+function wrapText(text, maxW) {
+  const lines = [];
+  let cur = '';
+  for (const w of text.split(' ')) {
+    const next = cur ? cur + ' ' + w : w;
+    if (cur && ctx.measureText(next).width > maxW) { lines.push(cur); cur = w; } else cur = next;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
+// --- Rider select + Medals screens (HTML panels) ---
+const selUI = {
+  panel: document.getElementById('screen-rider'),
+  grid: document.getElementById('rider-grid'),
+  preview: document.getElementById('rider-preview'),
+  name: document.getElementById('rider-name'),
+  go: document.getElementById('rider-go'),
+  back: document.getElementById('rider-back'),
+  medals: document.getElementById('screen-medals'),
+  medalRow: document.getElementById('medal-row'),
+  medBest: document.getElementById('med-best'),
+  medFar: document.getElementById('med-far'),
+  rewatch: document.getElementById('rewatch'),
+  medBack: document.getElementById('medals-back'),
+  riderBtn: document.getElementById('rider-btn'),
+  medalsBtn: document.getElementById('medals-btn'),
+  titleFace: document.getElementById('title-face'),
+};
+let selPick = curRider(), selThen = null;
+function canvasInto(el, c, cls) {
+  el.innerHTML = '';
+  c.className = cls || '';
+  el.appendChild(c);
+}
+function cloneCanvas(src) { const c = makeCanvas(src.width, src.height); c.getContext('2d').drawImage(src, 0, 0); return c; }
+function updateRiderPreview() {
+  selUI.name.textContent = selPick.name;
+  canvasInto(selUI.preview, cloneCanvas(riderPerson(selPick, { bag: true })), 'px big');
+  const top = riderTopSprite(selPick, 0);
+  top.className = 'px bike';
+  selUI.preview.appendChild(top);
+  selUI.grid.querySelectorAll('button').forEach((b) => b.classList.toggle('sel', b.dataset.id === selPick.id));
+}
+function buildRiderGrid() {
+  selUI.grid.innerHTML = '';
+  for (const r of RIDERS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.id = r.id;
+    const pc = makePortrait(r, '#1a1c2c');
+    pc.className = 'px';
+    b.appendChild(pc);
+    const s = document.createElement('span');
+    s.textContent = r.name;
+    b.appendChild(s);
+    b.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); selPick = r; updateRiderPreview(); });
+    selUI.grid.appendChild(b);
+  }
+}
+buildRiderGrid();
+function updateTitleRider() {
+  const pc = makePortrait(curRider(), '#2a3346');
+  pc.className = 'px';
+  canvasInto(selUI.titleFace, pc, 'px');
+}
+updateTitleRider();
+function showRiderSelect(then) {
+  game.state = 'menu';
+  selThen = then || null;
+  selPick = curRider();
+  selUI.go.textContent = then ? 'RIDE!' : 'CHOOSE';
+  selUI.back.classList.toggle('hidden', !!then && !rider);
+  updateRiderPreview();
+  showPanel(selUI.panel);
+}
+selUI.go.addEventListener('click', (e) => {
+  e.stopPropagation();
+  sfx.click();
+  rider = selPick;
+  storage.set(RIDER_KEY, rider.id);
+  applyRider();
+  updateTitleRider();
+  const then = selThen;
+  selThen = null;
+  if (then) then(); else showTitle();
+});
+selUI.back.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showTitle(); });
+
+function showMedals() {
+  game.state = 'menu';
+  selUI.medalRow.innerHTML = '';
+  for (const m of MEDALS) {
+    const got = !!progress.medals[m.id];
+    const d = document.createElement('div');
+    d.className = 'medal' + (got ? '' : ' locked');
+    const c = makeMedal(m.color, !got);
+    c.className = 'px';
+    d.appendChild(c);
+    const s = document.createElement('span');
+    s.textContent = got ? m.name : `WEEK ${m.week}`;
+    d.appendChild(s);
+    selUI.medalRow.appendChild(d);
+  }
+  if (progress.medals.silver) {
+    const d = document.createElement('div');
+    d.className = 'medal key';
+    const c = cloneCanvas(SPR.key);
+    c.className = 'px';
+    d.appendChild(c);
+    const s = document.createElement('span');
+    s.textContent = 'KEY TO THE CITY';
+    d.appendChild(s);
+    selUI.medalRow.appendChild(d);
+  }
+  selUI.medBest.textContent = best;
+  const f = progress.furthest, fd = DAY_NAMES[f % DAY_NAMES.length];
+  selUI.medFar.textContent = `W${Math.floor(f / DAY_NAMES.length) + 1} ${fd.slice(0, 3)}`;
+  selUI.rewatch.innerHTML = '';
+  const list = ['intro', 'week1', 'week2', 'week3'];
+  if (progress.weeksDone >= 4) list.push('week' + progress.weeksDone);
+  for (const id of list) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'aud-btn';
+    const open = !!progress.seen[id];
+    b.disabled = !open;
+    b.textContent = open ? `▶ ${CUTSCENE_TITLES[id] || 'WEEK ' + id.slice(4)}` : '🔒 ???';
+    b.addEventListener('click', (e) => { e.stopPropagation(); if (!open) return; sfx.click(); playCutscene(id, showMedals); });
+    selUI.rewatch.appendChild(b);
+  }
+  showPanel(selUI.medals);
+}
+selUI.medBack.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showTitle(); });
+selUI.riderBtn.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showRiderSelect(null); });
+selUI.medalsBtn.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showMedals(); });
+
+// Start from the title: pick a rider the first time, then the intro, then ride.
+function requestRun() {
+  if (!rider) { showRiderSelect(requestRun); return; }
+  if (!progress.seen.intro) { playCutscene('intro', startGame); return; }
+  startGame();
+}
 
 
 // ---------------------------------------------------------------------

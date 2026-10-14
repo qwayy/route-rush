@@ -173,3 +173,36 @@ h2 { font-size: 20px; font-weight: 400; text-transform: uppercase; color: var(--
 .tilt-row { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 10px; font-size: 9px; }
 .set-tilt { width: 140px; accent-color: var(--gold); }
 .tilt-val { min-width: 20px; color: var(--gold); font-weight: 400; }
+
+/* ---------- Rider select + medals ---------- */
+.px { image-rendering: crisp-edges; image-rendering: pixelated; }
+.title-btns { display: flex; gap: 6px; justify-content: center; margin-top: 12px; }
+.title-btns .aud-btn { display: flex; align-items: center; gap: 6px; }
+#title-face canvas { display: block; width: 27px; height: 27px; }
+.rider-preview { display: flex; justify-content: center; align-items: flex-end; gap: 22px; height: 92px; margin-top: 12px; }
+.rider-preview .big { width: 54px; height: 84px; }
+.rider-preview .bike { width: 36px; height: 63px; }
+.rider-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 10px; }
+.rider-grid button {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 4px 2px 6px;
+  border: 3px solid #1a1c2c;
+  background: #1a1c2c;
+  color: #fff;
+  font: 6px/1.4 "Press Start 2P", monospace;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.rider-grid button canvas { width: 54px; height: 54px; }
+.rider-grid button.sel { border-color: var(--gold); color: var(--gold); }
+#screen-rider .share.small, #screen-medals .share.small { margin-top: 8px; }
+.medal-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 16px 0; }
+.medal { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 7px; }
+.medal canvas { width: 42px; height: 60px; }
+.medal.key canvas { width: 54px; height: 15px; margin: 22px 0 23px; }
+.medal.locked span { opacity: 0.5; }
+.rewatch-label { margin-top: 14px; }
+.rewatch { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
+.rewatch .aud-btn { font-size: 8px; }
+.rewatch .aud-btn:disabled { color: #6b7280; cursor: default; }
+.panel canvas, .aud-btn canvas { position: static; inset: auto; }

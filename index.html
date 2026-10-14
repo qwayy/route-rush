@@ -28,6 +28,10 @@
         <li>Unlimited papers. One crash ends it.</li>
       </ul>
       <p class="best">Best: <span id="title-best">0</span></p>
+      <div class="title-btns">
+        <button id="rider-btn" class="aud-btn" type="button"><span id="title-face"></span>RIDER</button>
+        <button id="medals-btn" class="aud-btn" type="button">🏅 MEDALS</button>
+      </div>
       <button id="tilt-btn" class="share hidden" type="button">Tap to enable tilt</button>
       <p id="steer-mode" class="keys"></p>
       <div class="audio-row">
@@ -68,6 +72,28 @@
       <div class="tilt-row"><span>TILT</span><input class="set-tilt" type="range" min="1" max="10" step="1" value="5" aria-label="Tilt sensitivity"><b class="tilt-val">5</b></div>
       <button id="resume-btn" class="share" type="button">Resume</button>
       <p class="keys">P or Esc also resumes</p>
+    </section>
+
+    <section id="screen-rider" class="panel menu-panel hidden">
+      <h2>Choose Your Rider</h2>
+      <div id="rider-preview" class="rider-preview"></div>
+      <p id="rider-name" class="place"></p>
+      <div id="rider-grid" class="rider-grid"></div>
+      <p class="keys">Every rider rides the same. Just pick your look.</p>
+      <button id="rider-go" class="share" type="button">RIDE!</button>
+      <button id="rider-back" class="share alt small" type="button">BACK</button>
+    </section>
+
+    <section id="screen-medals" class="panel menu-panel hidden">
+      <h2>Medals</h2>
+      <div id="medal-row" class="medal-row"></div>
+      <div class="stats">
+        <div><span class="label">Best score</span><span id="med-best" class="value">0</span></div>
+        <div><span class="label">Furthest</span><span id="med-far" class="value">W1 MON</span></div>
+      </div>
+      <p class="label rewatch-label">Rewatch</p>
+      <div id="rewatch" class="rewatch"></div>
+      <button id="medals-back" class="share alt small" type="button">BACK</button>
     </section>
 
     <section id="screen-day" class="panel hidden">
