@@ -130,6 +130,9 @@ const CONFIG = {
   bonusDuration: 12,         // seconds of course (at the day's speed)
   bonusWeights: { jump: 2, targets: 2, slalom: 1 },
   targetHalf: 10,            // target hit half-length along the street
+  targetSafeRadius: 18,      // decorations keep this clear of mailboxes, porches, bonus targets and ramps
+  markerMinY: 90,            // subscriber markers never sit higher than this (just below the HUD bar)
+  markerLookAhead: 320,      // markers show up this far before their house scrolls on screen
   jumpTime: 0.85,
   jumpHeight: 34,
 
@@ -165,6 +168,11 @@ const CONFIG = {
 
   // Kansas City extras (per-day colors/props/obstacle mixes live in THEMES)
   joggerSpeed: 70,           // joggers run toward you
+  trafficLookAhead: 1.4,     // seconds ahead a moving car checks its lane for something to stop for
+  trafficGap: 14,            // gap a moving car keeps behind whatever is ahead of it
+  trafficBrake: 700,         // how hard it brakes / speeds back up / slides into the next lane
+  trafficAccel: 120,
+  trafficLaneSpeed: 70,
   trafficSpeedMin: 90,       // Plaza boulevard traffic drives ahead of you, slower than you
   trafficSpeedMax: 140,
   streetcarLead: 1.9,        // seconds before you arrive that the streetcar starts across
@@ -512,7 +520,7 @@ function sy(z) { return view.bikeY - (z - view.camZ); }
 const game = { state: 'title' };
 const bike = { x: 200, vx: 0, spin: 0, crashed: false, airT: 0, h: 0, invuln: 0 };
 const input = { steerTarget: 200, left: false, right: false };
-const debug = { hitAreas: false, taps: [] };   // triple-tap the score (or H) toggles hit-area outlines
+const debug = { hitAreas: /[?&]debug=1/.test(location.search), taps: [], warned: new Set(), warnings: 0, blockers: [] };   // triple-tap the score (or H) toggles hit-area outlines; ?debug=1 starts with it on
 let best = parseInt(storage.get(BEST_KEY, '0'), 10) || 0;
 
 function resetGame() {
@@ -554,6 +562,7 @@ function setupDay() {
   layoutDay();
   game.speed = targetSpeed();
   noteFurthest();
+  debug.blockersDay = null;
   pushBanner(DAY_NAMES[game.day], `${game.stats.subs} SUBSCRIBER${game.stats.subs === 1 ? '' : 'S'}`, COLORS.neutral, CONFIG.introTime, `${theme().name} · WEEK ${game.week}`);
 }
 
@@ -859,6 +868,70 @@ function layoutDay() {
   const bonusSpeed = speedFor(game.day, CONFIG.housesPerSide * 2);
   buildBonus(bz0, bz0 + CONFIG.bonusDuration * bonusSpeed);
   addLamps(-view.H, game.bonus.z1 + 400);
+  clearScoringZones();
+}
+
+// --- Keep decorations off scoring targets ---
+// Every mailbox, porch, bonus target and ramp gets a clear zone. A decoration
+// in it is slid along the street until it's clear (or dropped if there's no
+// room); the target never moves. Tall things block what's BEHIND them on
+// screen, so the zone reaches further on the far side of a prop.
+const PROP_SIZE = {   // [half-width, half-depth, height]
+  tree: [16, 14, 60], bush: [12, 6, 12], fountain: [16, 12, 30], grandFountain: [30, 20, 44], planter: [7, 5, 10],
+  smoker: [10, 8, 24], grill: [9, 7, 18], crowd: [22, 8, 26], lamp: [10, 3, 42], patio: [13, 10, 24],
+  jogside: [6, 4, 22], sidefence: [37, 2, 12], lightPost: [3, 3, 30], signal: [7, 2, 36],
+};
+function propBox(d) {
+  const [rx, rz, h] = PROP_SIZE[d.type] || [10, 8, 20], k = d.type === 'grandFountain' ? d.s : 1;
+  const x = d.type === 'sidefence' ? sideX(d.side, 55) : d.x;
+  return { x, z: d.z, rx: rx * k, rz: rz * k, h: h * k };
+}
+function scoringSpots() {
+  const spots = [];
+  for (const h of game.houses) {
+    if (h.scenery) continue;
+    spots.push({ kind: 'mailbox', h, x: sideX(h.side, L.mailboxX), z: h.mailZ, rx: 8, rz: 8 });
+    spots.push({ kind: 'porch', h, x: sideX(h.side, 92), z: h.z + h.len / 2, rx: 12, rz: L.porchHalf });
+  }
+  for (const t of game.targets) spots.push({ kind: 'bonus target', t, x: sideX(t.side, t.lx), z: t.z, rx: 10, rz: 10 });
+  for (const r of game.ramps) spots.push({ kind: 'ramp', r, x: r.x, z: r.z, rx: r.w / 2, rz: r.h / 2 });
+  return spots;
+}
+function propBlocks(b, t) {
+  const gap = CONFIG.targetSafeRadius;
+  if (Math.abs(b.x - t.x) >= b.rx + t.rx + gap) return false;
+  const dz = t.z - b.z;   // > 0: the target is further up the street than the prop
+  return dz > -(b.rz + t.rz + gap) && dz < b.rz + t.rz + gap + b.h * CONFIG.heightY;
+}
+function lotOK(d, z, b) {   // decorations in a yard stay out of the buildings
+  const side = (d.side !== undefined ? d.side : d.x < view.W / 2 ? -1 : 1);
+  const lx = side < 0 ? b.x : view.W - b.x;
+  if (lx - b.rx > L.sidewalkX0 - 4) return true;   // on the sidewalk: buildings don't matter
+  return !game.houses.some((h) => h.side === side && z + b.rz > h.z - 4 && z - b.rz < h.z + h.len + 4);
+}
+function clearScoringZones() {
+  const spots = scoringSpots();
+  const blocked = (b) => spots.some((t) => propBlocks(b, t));
+  game.decor = game.decor.filter((d) => {
+    const b = propBox(d);
+    if (!blocked(b)) return true;
+    for (let k = 1; k <= 24; k++) {
+      const z = d.z + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * 8;
+      const nb = { ...b, z };
+      if (!blocked(nb) && lotOK(d, z, nb)) { d.z = z; return true; }
+    }
+    return false;   // no room nearby: leave it out today
+  });
+  for (const ln of game.lights) ln.posts = ln.posts.filter((z) => !blocked({ x: sideX(ln.side, 108), z, ...{ rx: 3, rz: 3, h: 30 } }));
+  for (const tr of game.tracks) {   // streetcar crossing signals stand by the curb
+    if (!tr.car) continue;
+    const sig = (z) => [-1, 1].map((sd) => ({ x: sideX(sd, 114), z: z - 12, rx: 7, rz: 2, h: 36 }));
+    if (!sig(tr.z).some(blocked)) continue;
+    for (let k = 1; k <= 30; k++) {
+      const z = tr.z + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * 10;
+      if (!sig(z).some(blocked)) { tr.z = z; tr.car.z = z; break; }
+    }
+  }
 }
 
 // Ornate lamp posts along both sidewalks (THEMES[].lamps = spacing).
@@ -978,6 +1051,108 @@ function addStreetcar(z) {
   game.tracks.push({ z, car });
 }
 function nearTrack(z) { return game.tracks.some((tr) => Math.abs(tr.z - z) < 170); }
+function onTracks(o) { return game.tracks.some((tr) => tr.car && Math.abs(tr.z - o.z) < o.h / 2 + 30); }
+
+// --- Moving cars ---
+// A moving car looks down its lane. If something is there (a parked car, a
+// slower car, a median, cones, a closed streetcar crossing) it slides into a
+// clear lane if there is one, otherwise it slows and stops behind it. It is
+// never moved into anything: every step is checked first.
+const CAR_SOLID = new Set(['car', 'traffic', 'median', 'cone', 'barrier', 'fountain', 'skater']);
+function trafficLanes() { return [L.bikeMinX + 12, view.W / 2, L.bikeMaxX - 12]; }   // outer lanes pass a centre median
+function shuffleLanes() { return trafficLanes().sort(() => Math.random() - 0.5); }
+function solidSpan(b) {   // x-extent of an obstacle, including a skater's weave
+  const hw = b.type === 'skater' ? CONFIG.skaterWeave + b.w / 2 : b.w / 2, x = b.type === 'skater' ? b.baseX : b.x;
+  return [x - hw, x + hw];
+}
+// Nearest solid thing (other than o) overlapping x +- hw between zFrom and zTo.
+function laneBlocker(o, x, zFrom, zTo, hw = o.w / 2) {
+  let best = null;
+  for (const b of game.obstacles) {
+    if (b === o || !CAR_SOLID.has(b.type)) continue;
+    const [b0, b1] = solidSpan(b);
+    if (b1 <= x - hw - 2 || b0 >= x + hw + 2) continue;
+    if (b.z + b.h / 2 <= zFrom || b.z - b.h / 2 >= zTo) continue;
+    if (!best || b.z - b.h / 2 < best.z - best.h / 2) best = b;
+  }
+  return best;
+}
+function crossingClosed(car) {
+  const gone = car.active && (car.dir > 0 ? car.x > view.W + 90 : car.x < -90);
+  return car.warned && !gone;
+}
+// Stop line for a closed streetcar crossing ahead of something moving +z (dir 1) or -z (dir -1).
+function crossingStop(o, dir) {
+  let stopAt = null;
+  for (const tr of game.tracks) {
+    if (!tr.car || !crossingClosed(tr.car)) continue;
+    if (dir > 0) {
+      const line = tr.z - 13 - CONFIG.trafficGap - o.h / 2;   // where the centre must stop
+      if (o.z <= line + 1 && (stopAt === null || line < stopAt)) stopAt = line;
+    } else {
+      const line = tr.z + 13 + CONFIG.trafficGap + o.h / 2;
+      if (o.z >= line - 1 && (stopAt === null || line > stopAt)) stopAt = line;
+    }
+  }
+  return stopAt;
+}
+// Skaters and joggers wait at a closed crossing instead of rolling into the streetcar.
+function crossingHold(o, dz) {
+  const line = crossingStop(o, Math.sign(dz));
+  return line !== null && (dz > 0 ? o.z + dz > line : o.z + dz < line);
+}
+// A skater rolling up behind a moving car that has stopped waits instead of going through it.
+function carAhead(o, dz) {
+  const [x0, x1] = solidSpan(o), front = o.z + o.h / 2;
+  return game.obstacles.some((b) => b.type === 'traffic' && b.x + b.w / 2 > x0 && b.x - b.w / 2 < x1 &&
+    b.z - b.h / 2 >= front - 1 && b.z - b.h / 2 < front + dz + 4);
+}
+function overlapsVehicle(o) {
+  return game.obstacles.some((b) => b !== o && (b.type === 'car' || b.type === 'traffic') &&
+    Math.abs(b.x - o.x) < (b.w + o.w) / 2 + 4 && Math.abs(b.z - o.z) < (b.h + o.h) / 2 + CONFIG.trafficGap);
+}
+function updateTraffic(o, dt) {
+  const rear = o.z - o.h / 2, front = o.z + o.h / 2;
+  const look = front + Math.max(o.speed, 60) * CONFIG.trafficLookAhead + CONFIG.trafficGap;
+  // Finish a lane change, one checked step at a time.
+  if (o.tx !== undefined && o.tx !== o.x) {
+    const step = CONFIG.trafficLaneSpeed * dt, nx = Math.abs(o.tx - o.x) <= step ? o.tx : o.x + Math.sign(o.tx - o.x) * step;
+    if (!laneBlocker(o, nx, rear - 2, front + 2)) o.x = nx;
+  }
+  const merging = o.tx !== undefined && o.tx !== o.x;
+  let b = laneBlocker(o, o.x, rear - 1, look);
+  if (b && !merging) {   // try the nearest clear lane (the whole slide must be clear too)
+    for (const lx of trafficLanes().sort((p, q) => Math.abs(p - o.x) - Math.abs(q - o.x))) {
+      if (lx === o.x) continue;
+      const lo = Math.min(lx, o.x), hi = Math.max(lx, o.x);
+      const slideEnd = front + o.speed * Math.abs(lx - o.x) / CONFIG.trafficLaneSpeed + CONFIG.trafficGap;   // where it is when the slide ends
+      if (slideEnd < b.z - b.h / 2 &&                                               // room to finish the slide before it
+          !laneBlocker(o, (lo + hi) / 2, rear - CONFIG.trafficGap, slideEnd, (hi - lo + o.w) / 2) &&  // nothing beside it on the way over
+          !laneBlocker(o, lx, rear - CONFIG.trafficGap, look)) {                     // and the new lane is clear ahead
+        o.tx = lx; b = null; break;
+      }
+    }
+  }
+  let want = o.cruise;
+  if (b) {
+    const bv = b.type === 'traffic' ? b.speed : b.type === 'skater' ? CONFIG.skaterSpeed : 0;
+    const room = (b.z - b.h / 2) - front - CONFIG.trafficGap * 2;   // stop with room to pull out around it later
+    want = clamp(bv + room * 2, 0, o.cruise);
+  }
+  const stop = crossingStop(o, 1);
+  if (stop !== null) want = Math.min(want, Math.max(0, (stop - o.z) * 2));
+  const bonusLine = game.routeEndZ + CONFIG.bonusGap - 40 - o.h / 2;   // never onto the bonus course
+  want = Math.min(want, Math.max(0, (bonusLine - o.z) * 2));
+  o.speed = want < o.speed ? Math.max(want, o.speed - CONFIG.trafficBrake * dt) : Math.min(want, o.speed + CONFIG.trafficAccel * dt);
+  // Hard rule: the step forward may not touch anything.
+  let nz = o.z + o.speed * dt;
+  const hitB = laneBlocker(o, o.x, front - 1, nz + o.h / 2 + CONFIG.trafficGap / 2);
+  if (hitB) nz = Math.min(nz, Math.max(o.z, hitB.z - hitB.h / 2 - CONFIG.trafficGap / 2 - o.h / 2));
+  if (stop !== null) nz = Math.min(nz, Math.max(o.z, stop));
+  nz = Math.min(nz, Math.max(o.z, bonusLine));
+  if (nz - o.z < o.speed * dt) o.speed = (nz - o.z) / Math.max(dt, 1e-6);
+  o.z = nz;
+}
 
 // Bonus course: ramps that jump full-width barriers, roadside targets,
 // and half-width barriers to weave through.
@@ -1005,7 +1180,11 @@ function buildBonus(z0, z1) {
       decorateGap(side, z + len, z + step, rng, st);
       z += step;
     }
-    if (B.lights) game.lights.push({ side, z0: game.routeEndZ, z1: z1 + 400 });
+    if (B.lights) {
+      const posts = [];
+      for (let pz = game.routeEndZ; pz < z1 + 400; pz += 60) posts.push(pz);
+      game.lights.push({ side, posts });
+    }
     if (B.sideline === 'joggers' || B.sideline === 'crowd') {
       for (let zz = z0 - 150; zz < z1 + 150; zz += B.sidelineGap * lerp(0.8, 1.2, rng())) {
         game.decor.push(B.sideline === 'joggers'
@@ -1061,7 +1240,7 @@ function addJump(z, kind, rng) {
 // newsstand, a BBQ smoker or a fountain basin.
 function addTargets(side, z, kind) {
   if (kind === 'mailboxes') {
-    for (let i = -1; i <= 1; i++) game.targets.push({ side, lx: 116, z: z + i * 24, hit: false, kind: 'mailbox' });
+    for (let i = -1; i <= 1; i++) game.targets.push({ side, lx: 116, z: z + i * 40, hit: false, kind: 'mailbox' });   // far enough apart that each bullseye clears the next box
     return;
   }
   game.targets.push({ side, lx: kind === 'fountain' ? 112 : 116, z, hit: false, kind });
@@ -1071,7 +1250,13 @@ function spawnAhead() {
   const ahead = game.dist + view.bikeY + CONFIG.spawnMargin;
   const stop = game.routeEndZ - 120;
   while (game.nextObstacleZ < ahead && game.nextObstacleZ < stop) {
-    if (!nearTrack(game.nextObstacleZ)) spawnObstacle(game.nextObstacleZ);
+    if (!nearTrack(game.nextObstacleZ)) {
+      // Whatever spawns must not land on the rails or on top of a vehicle.
+      const n = game.obstacles.length;
+      spawnObstacle(game.nextObstacleZ);
+      const added = game.obstacles.splice(n);
+      if (added.every((o) => !onTracks(o) && !overlapsVehicle(o))) game.obstacles.push(...added);
+    }
     game.nextObstacleZ += obstacleGap() * rand(0.75, 1.25);
   }
 }
@@ -1116,10 +1301,19 @@ function spawnObstacle(z) {
       game.obstacles.push({ type, z: z + 200, x, baseX: x, phase: rand(0, Math.PI * 2), w: 14, h: 14, anim: 0 });
       break;
     }
-    case 'traffic':   // a car driving up the boulevard ahead of you (slower, so you catch up to it)
-      game.obstacles.push({ type, z: z + 120, x: pick([L.bikeMinX + 16, view.W / 2, L.bikeMaxX - 16]), w: 34, h: 66,
-        color: pick(COLORS.cars), speed: rand(CONFIG.trafficSpeedMin, CONFIG.trafficSpeedMax) });
+    case 'traffic': {   // a car driving up the boulevard ahead of you (slower, so you catch up to it)
+      const o = { type, z: z + 120, x: 0, w: 34, h: 66, color: pick(COLORS.cars), cruise: rand(CONFIG.trafficSpeedMin, CONFIG.trafficSpeedMax) };
+      o.speed = o.cruise;
+      // Its whole trip, until you pass it, must stay in a clear lane and end before the bonus course.
+      const catchT = (o.z - game.dist) / Math.max(20, targetSpeed() - o.cruise);
+      const tripEnd = o.z + o.h / 2 + o.cruise * catchT + CONFIG.trafficGap;
+      if (tripEnd > game.routeEndZ + CONFIG.bonusGap - 60) break;
+      const lane = shuffleLanes().find((x) => !laneBlocker(o, x, o.z - o.h / 2 - CONFIG.trafficGap, tripEnd));
+      if (lane === undefined) break;   // every lane has something parked in it: no car this time
+      o.x = lane;
+      game.obstacles.push(o);
       break;
+    }
     case 'median':   // planted island with a fountain in the middle of the road
       game.obstacles.push({ type, z, x: view.W / 2, w: 40, h: 90 });
       break;
@@ -1203,14 +1397,14 @@ function update(dt) {
       if (!o.active && (o.z - game.dist) / game.speed < o.lead) { o.active = true; if (o.type === 'dog') sfx.bark(); }
       if (o.active) { o.x += o.dir * o.speed * dt; o.anim += dt * 16; }
     } else if (o.type === 'skater') {
-      o.z += CONFIG.skaterSpeed * dt;
+      if (!crossingHold(o, CONFIG.skaterSpeed * dt) && !carAhead(o, CONFIG.skaterSpeed * dt)) o.z += CONFIG.skaterSpeed * dt;
       o.x = o.baseX + Math.sin(o.phase + game.time * CONFIG.skaterWeaveFreq) * CONFIG.skaterWeave;
     } else if (o.type === 'jogger') {
-      o.z -= CONFIG.joggerSpeed * dt;
+      if (!crossingHold(o, -CONFIG.joggerSpeed * dt)) o.z -= CONFIG.joggerSpeed * dt;
       o.anim += dt * 8;
       o.x = o.baseX + Math.sin(o.phase + game.time * 1.3) * 10;
     } else if (o.type === 'traffic') {
-      o.z += o.speed * dt;
+      updateTraffic(o, dt);
     } else if (o.type === 'car' && !o.cross && !o.honked && o.z > game.dist &&
                (o.z - game.dist) / game.speed < CONFIG.honkLead && Math.abs(o.x - bike.x) < 60) {
       o.honked = true;   // honks as you come up on it
@@ -1248,6 +1442,8 @@ function update(dt) {
     sfx.missed();
     breakCombo(sideX(h.side, 80), game.dist + view.bikeY - (view.H - 100));
   }
+
+  if (debug.hitAreas) debugChecks();
 
   // Day phases
   if (game.phase === 'route' && game.dist > game.routeEndZ && !game.flying.length) finishRoute();   // let the last papers land first
@@ -1359,6 +1555,44 @@ function despawnBehind() {
   game.groundPapers = game.groundPapers.filter((p) => p.z > limit);
   game.ramps = game.ramps.filter((r) => r.z + r.h > limit);
   game.targets = game.targets.filter((t) => t.z > limit);
+}
+
+// Debug mode only (triple-tap the score / H / ?debug=1): warn in the console
+// when two vehicles overlap, something sits on an active streetcar crossing,
+// or a decoration blocks a scoring target. Each problem is reported once.
+function debugWarn(key, msg) {
+  if (debug.warned.has(key)) return;
+  debug.warned.add(key);
+  debug.warnings++;
+  console.warn('[Route Rush debug] ' + msg);
+}
+function debugChecks() {
+  const obs = game.obstacles, tag = (o) => `${o.type}${o.cross ? '(cross)' : ''} @x${Math.round(o.x)} z${Math.round(o.z)}`;
+  const touch = (a, b) => Math.abs(a.x - b.x) < (a.w + b.w) / 2 && Math.abs(a.z - b.z) < (a.h + b.h) / 2;
+  for (const o of obs) if (o.dbg === undefined) o.dbg = debug.nextId = (debug.nextId || 0) + 1;
+  for (let i = 0; i < obs.length; i++) {
+    const a = obs[i];
+    for (let j = i + 1; j < obs.length; j++) {
+      const b = obs[j];
+      if (a.cross || b.cross || a.type === 'streetcar' || b.type === 'streetcar') continue;
+      const veh = a.type === 'traffic' || b.type === 'traffic' || (a.type === 'car' && b.type === 'car');
+      if (veh && CAR_SOLID.has(a.type) && CAR_SOLID.has(b.type) && touch(a, b)) {
+        debugWarn(`v${a.dbg}-${b.dbg}`, `vehicle overlap: ${tag(a)} and ${tag(b)} (${DAY_NAMES[game.day]})`);
+      }
+    }
+    if (a.type === 'streetcar' && a.active && a.x + a.w / 2 > L.streetX0 - 20 && a.x - a.w / 2 < L.streetX1 + 20) {
+      for (const o of obs) if (o !== a && o.type !== 'pothole' && touch(a, o)) debugWarn(`s${a.dbg}-${o.dbg}`, `on the streetcar crossing: ${tag(o)}`);
+    }
+  }
+  if (debug.blockersDay !== `${game.week}-${game.day}`) {   // decorations vs targets: once per day
+    debug.blockersDay = `${game.week}-${game.day}`;
+    debug.blockers = [];
+    const spots = scoringSpots();
+    for (const d of game.decor) {
+      const bx = propBox(d), t = spots.find((sp) => propBlocks(bx, sp));
+      if (t) { debug.blockers.push(d); debugWarn(`p${DAY_NAMES[game.day]}${game.week}-${d.type}-${Math.round(d.z)}`, `${d.type} at z${Math.round(d.z)} blocks a ${t.kind} at z${Math.round(t.z)} (${DAY_NAMES[game.day]})`); }
+    }
+  }
 }
 
 function overlapsBike(o, forgiveness) {
@@ -1996,6 +2230,16 @@ SPR.marker = (() => {   // the subscriber marker, drawn at double size so it rea
   g.drawImage(src, 0, 0, c.width, c.height);
   return c;
 })();
+SPR.markerGlow = (() => {   // 1-pixel light halo around the marker
+  const m = SPR.marker, w = m.width + 2, h = m.height + 2, src = m.getContext('2d').getImageData(0, 0, m.width, m.height).data;
+  const on = (x, y) => x >= 0 && y >= 0 && x < m.width && y < m.height && src[(y * m.width + x) * 4 + 3] > 0;
+  return spriteFromFn(w, h, (px) => {
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      if (on(x - 1, y - 1)) continue;
+      if (on(x - 2, y - 1) || on(x, y - 1) || on(x - 1, y - 2) || on(x - 1, y)) px(x, y, '#fff7d6');
+    }
+  });
+})();
 SPR.ring = spriteFromFn(9, 9, (px) => {
   for (let y = 0; y < 9; y++) for (let x = 0; x < 9; x++) {
     const d = Math.hypot(x + 0.5 - 4.5, y + 0.5 - 4.5);
@@ -2142,15 +2386,18 @@ function render(now) {
   for (const d of game.decor) items.push([d.z, drawDecor, d]);
   for (const o of game.obstacles) if (o.type !== 'pothole') items.push([o.z - o.h / 2, drawObstacle, o]);
   for (const r of game.ramps) items.push([r.z - r.h / 2, drawRamp, r]);
-  for (const tg of game.targets) items.push([tg.z, drawTarget, tg]);
   for (const tr of game.tracks) items.push([tr.z - 12, drawCrossing, tr]);
   items.push([game.dist - CONFIG.bikeHalfL, drawBike, null]);
   items.sort((a, c) => c[0] - a[0]);
   for (const [, fn, o] of items) fn(o, t);
 
   drawLights(t);
-  for (const p of game.flying) drawFlyingPaper(p);
   drawSmoke();
+  // Scoring layer: always on top of the world (only papers, particles, pop
+  // text and the HUD go over it).
+  for (const tg of game.targets.slice().sort((a, c) => c.z - a.z)) drawTarget(tg, t);   // far to near
+  for (const p of game.flying) drawFlyingPaper(p);
+  drawTargetRings(t);
   drawSubMarkers(t);
   drawParticles();
   if (debug.hitAreas) drawHitAreas();
@@ -2641,6 +2888,9 @@ function drawMailbox(h, t) {
     const pulse = 0.5 + 0.5 * Math.sin(t * 6);
     pix.globalAlpha = 0.25 + pulse * 0.15;
     fillPoly(ellipsePts(mx, mz, 16, 11, 16), COLORS.perfect);
+    pix.globalAlpha = 0.55;
+    pix.fillStyle = PAL.k;
+    ringPixels(mx, mz, 20 + pulse * 4, 15 + pulse * 3);
     pix.globalAlpha = 0.9;
     pix.fillStyle = COLORS.perfect;
     ringPixels(mx, mz, 18 + pulse * 4, 13 + pulse * 3);
@@ -3023,8 +3273,14 @@ function drawTarget(tg, t) {
       drawSpriteC(SPR.shadowS, x, y + 1);
       drawSprite(SPR.target, x, y, tg.hit ? tg.side * Math.PI / 2 : 0);
   }
-  if (!tg.hit && tg.kind) {
-    const [rx, ry] = proj(x, z, 34 + (Math.sin(t * 5 + z) > 0 ? CONFIG.pixelSize : 0));
+}
+function drawTargetRings(t) {
+  for (const tg of game.targets) {
+    if (tg.hit || !tg.kind) continue;
+    const x = sideX(tg.side, tg.lx), y = sy(tg.z);
+    if (y < -10 || y - 70 > view.H) continue;
+    const lift = tg.kind === 'mailbox' ? 28 : 34;   // mailbox rows: low enough to clear the next box in the row
+    const [rx, ry] = proj(x, tg.z, lift + (Math.sin(t * 5 + tg.z) > 0 ? CONFIG.pixelSize : 0));
     drawSprite(SPR.ring, rx, ry);
   }
 }
@@ -3033,16 +3289,25 @@ function drawTarget(tg, t) {
 // above the roof, so it's the first thing of the house to scroll on screen;
 // while the house is still above the HUD it peeks out right under it.
 function drawSubMarkers(t) {
-  const minY = view.safeTop + 66;
+  const mh = SPR.marker.height * CONFIG.pixelSize, pinY = view.safeTop + CONFIG.markerMinY + mh;
+  const pinned = { '-1': null, 1: null };   // while still above the screen, only the next one per side is pinned
   for (const h of game.houses) {
     if (!canDeliver(h) || h.passed) continue;
     const st = HOUSE_STYLES[h.style];
     const top = h.wallH + (st.roof === 'flat' ? 6 : st.roofH);
     const [mx, my] = proj(sideX(h.side, 66), h.z + h.len / 2, top + 16);
-    if (my < -40 || my > view.H + 10) continue;
-    const bob = Math.sin(t * 5 + h.z) > 0 ? CONFIG.pixelSize * 2 : 0;
-    drawSprite(SPR.marker, mx, Math.max(my, minY + SPR.marker.height * CONFIG.pixelSize) - bob);
+    if (my < -CONFIG.markerLookAhead || my > view.H + 10) continue;
+    if (my < pinY) { if (!pinned[h.side] || h.z < pinned[h.side][0].z) pinned[h.side] = [h, mx]; continue; }
+    drawMarker(mx, my, t, h.z);
   }
+  for (const k in pinned) if (pinned[k]) drawMarker(pinned[k][1], pinY, t, pinned[k][0].z);
+}
+function drawMarker(x, y, t, seed) {
+  const bob = Math.sin(t * 5 + seed) > 0 ? CONFIG.pixelSize * 2 : 0;
+  pix.globalAlpha = 0.55 + 0.3 * Math.sin(t * 6 + seed);   // soft light halo so it reads on any palette
+  drawSprite(SPR.markerGlow, x, y - bob + CONFIG.pixelSize);
+  pix.globalAlpha = 1;
+  drawSprite(SPR.marker, x, y - bob);
 }
 
 // Westport string lights along the sidewalks, twinkling.
@@ -3050,9 +3315,10 @@ function drawLights(t) {
   const colors = ['#ffd76a', '#ff8c42', '#ff5a5f', '#9fd3f0'];
   for (const ln of game.lights) {
     const x = sideX(ln.side, 108);
-    for (let za = ln.z0; za < ln.z1; za += 60) {
-      if (sy(za) < -60 || sy(za + 60) > view.H + 20) continue;
+    ln.posts.forEach((za, i) => {
+      if (sy(za) < -60 || sy(za + 60) > view.H + 20) return;
       box3(x - 1, x + 1, za - 1, za + 1, 0, 30, '#4a4d55');
+      if (ln.posts[i + 1] !== za + 60) return;   // no string across a gap where a post was left out
       for (let f = 0.1; f < 1; f += 0.15) {
         const z = za + f * 60, hh = 30 - Math.sin(Math.PI * f) * 7;
         const c = colors[((za / 60 + f * 7) | 0) % colors.length];
@@ -3060,7 +3326,7 @@ function drawLights(t) {
         pixelAt(x, z, hh, c);
       }
       pix.globalAlpha = 1;
-    }
+    });
   }
 }
 
@@ -3141,6 +3407,14 @@ function drawHitAreas() {
     if (!h.sub) for (const pr of h.props) if (!pr.knocked) outline(h.side, pr.lx - pr.hw, pr.lx + pr.hw, pr.z - pr.hz - 3, pr.z + pr.hz + 3, '#ffffff');
   }
   for (const t of game.targets) if (!t.hit) outline(t.side, t.lx - 6, t.lx + 4, t.z - CONFIG.targetHalf, t.z + CONFIG.targetHalf, '#ffffff');
+  for (const r of game.ramps) {   // ramp footprint
+    const c = [[r.x - r.w / 2, r.z - r.h / 2], [r.x + r.w / 2, r.z - r.h / 2], [r.x + r.w / 2, r.z + r.h / 2], [r.x - r.w / 2, r.z + r.h / 2]].map(([x, z]) => proj(x, z, 0));
+    for (let i = 0; i < 4; i++) lineL(c[i], c[(i + 1) % 4], COLORS.good);
+  }
+  for (const d of debug.blockers) {   // decorations sitting on a scoring target (should never happen)
+    const b = propBox(d), c = [[b.x - b.rx, d.z - b.rz], [b.x + b.rx, d.z - b.rz], [b.x + b.rx, d.z + b.rz], [b.x - b.rx, d.z + b.rz]].map(([x, z]) => proj(x, z, 0));
+    for (let i = 0; i < 4; i++) lineL(c[i], c[(i + 1) % 4], COLORS.bad);
+  }
 
   // Paper paths: live papers in white, finished ones end in their outcome color.
   const OUTCOME = { mailbox: COLORS.perfect, porch: COLORS.good, property: COLORS.debugProperty, window: COLORS.bad, wall: COLORS.bad };
@@ -3224,7 +3498,7 @@ function drawHUD() {
   if (debug.hitAreas) {   // label + color key
     ctx.textAlign = 'center';
     ctx.font = `8px ${FONT}`;
-    textShadowed('DEBUG: TRIPLE-TAP SCORE', view.W / 2, top + 76, COLORS.good);
+    textShadowed(`DEBUG: TRIPLE-TAP SCORE · WARN ${debug.warnings}`, view.W / 2, top + 76, debug.warnings ? COLORS.bad : COLORS.good);
     ctx.textAlign = 'left';
     const key = [['MAILBOX', COLORS.perfect], ['PORCH', COLORS.good], ['PROPERTY', COLORS.debugProperty], ['WINDOW', COLORS.bad]];
     let kx = 8;
