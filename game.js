@@ -468,6 +468,8 @@ function resize() {
   buf.height = view.H / ps + PAD * 2;
   pix.imageSmoothingEnabled = false;
 
+  document.documentElement.style.setProperty('--gx', `${view.offX}px`);   // pause button stays in the game's top-right corner
+  document.documentElement.style.setProperty('--gy', `${view.offY}px`);
   const sat = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sat')) || 0;
   view.safeTop = Math.max(0, sat - view.offY) / view.scale;
 }
@@ -788,7 +790,12 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyH') { debug.hitAreas = !debug.hitAreas; return; }
   if (game.state === 'over' && overUnlocked() && (e.code === 'KeyR' || e.code === 'KeyN')) { e.code === 'KeyR' ? retryDay() : startGame(); return; }
   if (e.code === 'KeyM') { cycleMusic(); return; }
-  if (e.code === 'KeyP' || e.code === 'Escape') { if (game.state === 'playing') pauseGame(); else resumeGame(); return; }
+  if (e.code === 'KeyP' || e.code === 'Escape') {
+    if (game.state === 'playing') pauseGame();
+    else if (game.state === 'paused' && !pauseUI.confirm.classList.contains('hidden')) showPauseView('main');   // Esc = NO
+    else resumeGame();
+    return;
+  }
   if (KEYS_THROW_LEFT.includes(e.code)) throwPaper(-1);
   else if (KEYS_THROW_RIGHT.includes(e.code)) throwPaper(1);
   else if (e.code === 'Space' || e.code === 'Enter') {
@@ -4138,6 +4145,8 @@ function pauseGame() {
   game.state = 'paused';
   pointers.clear();
   input.left = input.right = false;
+  game.queuedThrow = 0;   // nothing tapped before pausing fires afterwards
+  showPauseView('main');
   pauseMusic();
   updatePedalSound(false);
   showPanel(ui.pause);
@@ -4145,13 +4154,50 @@ function pauseGame() {
 function resumeGame() {
   if (game.state !== 'paused') return;
   game.state = 'playing';
+  pointers.clear();
+  tilt.smooth = tilt.raw;   // tilting the phone while paused doesn't yank the bike on resume
   hideOverlay();
   if (music.on) startMusic();
 }
+// Auto-pause: phone locked, app in the background, tab switched, window left.
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { pauseGame(); pauseMusic(); }
   else if (music.on && game.state !== 'paused') startMusic();
 });
+window.addEventListener('pagehide', () => { pauseGame(); pauseMusic(); });
+window.addEventListener('blur', () => pauseGame());
+
+// Pause menu: RESUME / RETRY DAY / SETTINGS / MAIN MENU (with a confirm).
+const pauseUI = {
+  main: document.getElementById('pause-main'),
+  confirm: document.getElementById('pause-confirm'),
+  settings: document.getElementById('pause-settings-box'),
+  settingsBtn: document.getElementById('pause-settings'),
+};
+function showPauseView(v) {
+  pauseUI.main.classList.toggle('hidden', v !== 'main');
+  pauseUI.confirm.classList.toggle('hidden', v !== 'confirm');
+  if (v === 'main') { pauseUI.settings.classList.add('hidden'); pauseUI.settingsBtn.classList.remove('open'); }
+}
+function quitToMenu() {
+  if (game.state !== 'paused') return;
+  if (game.score > best) { best = game.score; storage.set(BEST_KEY, best); }   // saved like a normal game over
+  checkUnlocks();
+  pauseMusic();
+  music.on = false;
+  updatePedalSound(false);
+  resetGame();
+  showTitle();
+}
+const onTap = (id, fn) => document.getElementById(id).addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); fn(); });
+onTap('pause-retry', () => { if (game.state === 'paused') retryDay(); });
+onTap('pause-settings', () => {
+  const open = pauseUI.settings.classList.toggle('hidden') === false;
+  pauseUI.settingsBtn.classList.toggle('open', open);
+});
+onTap('pause-quit', () => showPauseView('confirm'));
+onTap('quit-yes', quitToMenu);
+onTap('quit-no', () => showPauseView('main'));
 
 // --- Sound settings UI (start screen + pause menu) ---
 const MUSIC_MODES = ['song', 'chip', 'off'];
@@ -4338,9 +4384,18 @@ function makePerson(o) {
   } else {
     rect(2, 13, 3, 18, sleeve); rect(12, 13, 13, 18, sleeve); rect(2, 19, 3, 19, skin); rect(12, 19, 13, 19, skin);
   }
-  if (o.bag && !o.back) {
-    for (let i = 0; i < 6; i++) set(5 + i, 13 + i, PAL.Y);
-    rect(11, 17, 14, 21, PAL.y); rect(11, 17, 14, 17, PAL.Y); rect(12, 16, 13, 16, PAL.e);
+  const fill = o.bag ? 4 : o.satchel;   // satchel across the body, bulging as papers go in
+  if (fill !== undefined && fill !== null && !o.back) {
+    for (let i = 0; i < 6; i++) set(5 + i, 13 + i, PAL.Y);   // strap over the shoulder
+    if (fill === 0) { rect(11, 18, 13, 21, PAL.y); rect(11, 18, 13, 18, PAL.Y); }   // empty: flat
+    else {
+      rect(11, 17, 14, 21, PAL.y); rect(11, 17, 14, 17, PAL.Y);
+      if (fill >= 2) rect(15, 18, 15, 20, PAL.y);
+      if (fill >= 4) rect(10, 18, 10, 20, PAL.y);
+      set(12, 16, PAL.e);
+      if (fill >= 3) set(13, 16, PAL.e);
+      if (fill >= 4) set(12, 15, PAL.e);
+    }
   }
   if (o.medal && !o.back) {
     set(6, 13, '#d64545'); set(7, 14, '#d64545'); set(9, 13, '#3a7bd5'); set(8, 14, '#3a7bd5');
@@ -4455,8 +4510,10 @@ function cutsceneScript(id) {
   if (id === 'intro') return { scene: 'office', steps: [
     { who: 'BOSS', text: 'So you\'re the new carrier! Welcome to the Daily Route.' },
     { who: 'BOSS', text: 'Seven neighborhoods. Every morning. Rain or shine.' },
-    { who: 'BOSS', text: 'Kansas City\'s counting on you. Don\'t miss a porch.', bag: true },
-    { who: me, text: 'I won\'t let you down!', bag: true, cheer: true },
+    { who: 'BOSS', text: 'First, your satchel. Catch!', satchel: true },
+    { who: 'BOSS', text: 'And your papers...', papers: true },
+    { who: 'BOSS', text: 'Kansas City\'s counting on you. Don\'t miss a porch.' },
+    { who: me, text: 'I won\'t let you down!', cheer: true },
   ] };
   if (id === 'week1') return { scene: 'stage', steps: [
     { who: '', text: 'One week later... a ceremony downtown!' },
@@ -4486,7 +4543,7 @@ const CUTSCENE_TITLES = { intro: 'THE NEW HIRE', week1: 'BRONZE', week2: 'SILVER
 
 const cs = { id: '', script: null, step: 0, typed: 0, stepT: 0, t: 0, done: null, lastBlip: 0 };
 function playCutscene(id, done) {
-  Object.assign(cs, { id, script: cutsceneScript(id), step: 0, typed: 0, stepT: 0, t: 0, done, lastBlip: 0 });
+  Object.assign(cs, { id, script: cutsceneScript(id), step: 0, typed: 0, stepT: 0, t: 0, done, lastBlip: 0, caught: false, thumps: 0 });
   progress.seen[id] = 1;
   saveProgress();
   game.state = 'cutscene';
@@ -4503,6 +4560,11 @@ function stepSound() {
 }
 function updateCutscene(dt) {
   cs.t += dt; cs.stepT += dt;
+  if (cs.id === 'intro') {
+    const st = cs.script.steps[cs.step], b = introBag();
+    if (st.satchel && b.worn && !cs.caught) { cs.caught = true; sfx.property(0); }
+    if (st.papers && b.fill > cs.thumps) { cs.thumps = b.fill; sfx.property(b.fill); sfx.blip(b.fill, 0.06); }
+  }
   const text = cs.script.steps[cs.step].text;
   if (cs.typed < text.length) {
     cs.typed = Math.min(text.length, cs.typed + dt * CONFIG.typeSpeed);
@@ -4528,6 +4590,29 @@ function cutsceneTap(x, y) {
   const r = skipRect();
   if (x >= r.x - 8 && x <= r.x + r.w + 8 && y >= r.y - 8 && y <= r.y + r.h + 8) { sfx.click(); endCutscene(); return; }
   advanceCutscene();
+}
+
+// Intro hand-off: one empty satchel tossed and caught, then the papers go in
+// one at a time. Worked out from the step + time, so skipping ahead or going
+// to the next line never replays a toss.
+const SATCHEL = { flight: 0.6, papers: 4, first: 0.3, gap: 0.5, paperFlight: 0.45 };
+function introBag() {
+  const steps = cs.script.steps, ts = steps.findIndex((x) => x.satchel), tp = steps.findIndex((x) => x.papers);
+  const out = { worn: false, fill: 0, satchelK: -1, flying: [] };
+  if (cs.step < ts) return out;
+  if (cs.step === ts) {
+    const k = cs.stepT / SATCHEL.flight;
+    if (k < 1) out.satchelK = k; else out.worn = true;
+    return out;
+  }
+  out.worn = true;
+  if (cs.step > tp) { out.fill = SATCHEL.papers; return out; }
+  for (let i = 0; i < SATCHEL.papers; i++) {
+    const k = (cs.stepT - SATCHEL.first - i * SATCHEL.gap) / SATCHEL.paperFlight;
+    if (k >= 1) out.fill++;
+    else if (k >= 0) out.flying.push(k);
+  }
+  return out;
 }
 
 // --- Cutscene drawing (art-pixel coordinates in the buffer) ---
@@ -4602,13 +4687,25 @@ function sceneOffice(t, st, AW, SH) {
   cr(96, deskY, 88, 30, '#6b4226'); cr(96, deskY, 88, 4, '#8a5a36'); cr(100, deskY + 8, 80, 1, '#4a2e1a');
   cr(104, deskY - 6, 18, 6, '#f7f4ea'); cr(104, deskY - 3, 18, 1, '#b8b0a0');   // papers on the desk
   cr(160, deskY - 8, 10, 8, '#d64545'); cr(163, deskY - 11, 4, 3, '#2b2b35');   // mug + phone-ish
-  // Rider; the bag slides over on the hand-off step
-  const handed = st.bag, k = handed ? clamp(cs.stepT / 0.6, 0, 1) : 0;
-  const hop = st.cheer ? Math.round(Math.abs(Math.sin(cs.stepT * 8)) * 3) : 0;
-  cimg(riderPerson(curRider(), { bag: handed && k >= 1, armsUp: !!st.cheer }), 22, floorY - 72 - hop, 3);
-  if (handed && k < 1) {
-    const bx0 = lerp(bossX - 4, 58, k), by0 = lerp(deskY - 14, floorY - 30, k) - Math.sin(k * Math.PI) * 14;
-    cr(bx0, by0, 10, 10, PAL.y); cr(bx0, by0, 10, 2, PAL.Y); cr(bx0 + 2, by0 - 2, 6, 2, PAL.e);
+  // Rider: catches the empty satchel, puts it on, then each paper lands in it
+  const bag = introBag(), hop = st.cheer ? Math.round(Math.abs(Math.sin(cs.stepT * 8)) * 3) : 0;
+  const catching = bag.satchelK >= 0.55;   // hands up as it arrives
+  cimg(riderPerson(curRider(), { satchel: bag.worn ? bag.fill : undefined, armsUp: !!st.cheer || catching }), 22, floorY - 72 - hop, 3);
+  const handX = bossX + 4, handY = deskY - 16, bagX = 62, bagY = floorY - 16;   // boss's hand -> the satchel on the rider
+  if (bag.satchelK >= 0) {   // the empty satchel, strap flapping
+    const k = bag.satchelK, x = lerp(handX, 40, k), y = lerp(handY, floorY - 66, k) - Math.sin(k * Math.PI) * 22;
+    cr(x - 1, y + 2, 16, 11, PAL.k); cr(x, y + 3, 14, 9, PAL.y); cr(x, y + 3, 14, 3, PAL.Y);   // empty satchel, flap closed
+    const flap = Math.round(Math.sin(cs.t * 20) * 2);
+    cr(x + 1, y - 3 + flap, 2, 6, PAL.Y); cr(x + 11, y - 3 - flap, 2, 6, PAL.Y); cr(x + 2, y - 4, 10, 2, PAL.Y);   // strap
+  }
+  for (const k of bag.flying) {   // rolled papers in quick arcs, spinning
+    const x = lerp(handX, bagX, k), y = lerp(handY, bagY, k) - Math.sin(k * Math.PI) * 26;
+    if (Math.floor(k * 6) % 2) { cr(x - 1, y - 1, 6, 10, PAL.k); cr(x, y, 4, 8, PAL.e); cr(x, y + 3, 4, 2, PAL.r); }
+    else { cr(x - 3, y + 1, 10, 6, PAL.k); cr(x - 2, y + 2, 8, 4, PAL.e); cr(x + 1, y + 2, 2, 4, PAL.r); }
+  }
+  if (bag.fill > 0 && bag.flying.length < SATCHEL.papers && cs.step === cs.script.steps.findIndex((x) => x.papers)) {   // little puff on each landing
+    const since = cs.stepT - SATCHEL.first - (bag.fill - 1) * SATCHEL.gap - SATCHEL.paperFlight;
+    if (since < 0.15) for (let i = 0; i < 3; i++) cr(bagX - 4 + i * 4, bagY - 6 - since * 30, 1, 1, '#e8e2d0');
   }
 }
 
@@ -4937,7 +5034,7 @@ function pumpUnlocks() {
 // HUD: the rider's skill icon (top right). Second Wind dims once it's used today.
 function drawSkillHUD(top) {
   const r = curRider(), img = SPR['skill_' + r.skill], sz = img.width * 2;
-  const x = view.W - 12 - sz, y = top + 52;
+  const x = view.W - 12 - sz, y = top + 64;   // below the pause button
   ctx.fillStyle = 'rgba(10,12,22,0.55)';
   ctx.fillRect(x - 4, y - 4, sz + 8, sz + 8);
   ctx.globalAlpha = r.skill === 'secondWind' && game.secondWind <= 0 ? 0.25 : 1;

@@ -63,15 +63,32 @@
     </section>
 
     <section id="screen-pause" class="panel hidden">
-      <h2>Paused</h2>
-      <div class="audio-row">
-        <button class="aud-btn set-sfx" type="button">🔊 SFX</button>
-        <button class="aud-btn set-music" type="button">🎵 SONG</button>
-        <input class="set-vol" type="range" min="0" max="100" value="80" aria-label="Volume">
+      <div id="pause-main">
+        <h2>Paused</h2>
+        <div class="pause-btns">
+          <button id="resume-btn" class="share" type="button">RESUME</button>
+          <button id="pause-retry" class="share alt" type="button">RETRY DAY</button>
+          <button id="pause-settings" class="share alt" type="button">SETTINGS</button>
+          <div id="pause-settings-box" class="settings-box hidden">
+            <div class="audio-row">
+              <button class="aud-btn set-sfx" type="button">🔊 SFX</button>
+              <button class="aud-btn set-music" type="button">🎵 SONG</button>
+              <input class="set-vol" type="range" min="0" max="100" value="80" aria-label="Volume">
+            </div>
+            <div class="tilt-row"><span>TILT</span><input class="set-tilt" type="range" min="1" max="10" step="1" value="5" aria-label="Tilt sensitivity"><b class="tilt-val">5</b></div>
+          </div>
+          <button id="pause-quit" class="share alt" type="button">MAIN MENU</button>
+        </div>
+        <p class="keys">P or Esc also resumes</p>
       </div>
-      <div class="tilt-row"><span>TILT</span><input class="set-tilt" type="range" min="1" max="10" step="1" value="5" aria-label="Tilt sensitivity"><b class="tilt-val">5</b></div>
-      <button id="resume-btn" class="share" type="button">Resume</button>
-      <p class="keys">P or Esc also resumes</p>
+      <div id="pause-confirm" class="hidden">
+        <h2>Main menu</h2>
+        <p class="reason">Quit to main menu? This run will end.</p>
+        <div class="over-btns">
+          <button id="quit-yes" class="share" type="button">YES</button>
+          <button id="quit-no" class="share alt" type="button">NO</button>
+        </div>
+      </div>
     </section>
 
     <section id="screen-rider" class="panel menu-panel hidden">

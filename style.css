@@ -138,15 +138,16 @@ h2 { font-size: 20px; font-weight: 400; text-transform: uppercase; color: var(--
 /* ---------- Pause button + sound settings ---------- */
 .pause-btn {
   position: absolute;
-  top: calc(8px + env(safe-area-inset-top, 0px));
-  right: 8px;
+  top: calc(6px + env(safe-area-inset-top, 0px) + var(--gy, 0px));
+  right: calc(6px + var(--gx, 0px));
   z-index: 5;
-  width: 36px;
-  height: 36px;
+  width: 46px;
+  height: 46px;
   border: 3px solid #1a1c2c;
-  background: #2a3346;
+  background: rgba(42, 51, 70, 0.92);
+  box-shadow: 3px 3px 0 #1a1c2c;
   color: var(--gold);
-  font: 12px/1 "Press Start 2P", monospace;
+  font: 15px/1 "Press Start 2P", monospace;
   cursor: pointer;
   touch-action: manipulation;
 }
@@ -242,3 +243,12 @@ h2 { font-size: 20px; font-weight: 400; text-transform: uppercase; color: var(--
 .unlock-pop canvas { position: static; width: 36px; height: 36px; }
 .unlock-pop b { display: block; font-size: 10px; font-weight: 400; color: var(--gold); }
 .unlock-pop span { display: block; margin-top: 6px; font-size: 8px; }
+
+/* ---------- Pause menu ---------- */
+.pause-btns { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+.pause-btns .share { margin-top: 0; padding: 12px; font-size: 13px; }
+#screen-pause .pause-btns .share { margin-top: 0; }
+#pause-settings.open { background: #4a5266; }
+.settings-box { padding: 4px 6px 10px; background: #1a1c2c; }
+.settings-box.hidden, #pause-main.hidden, #pause-confirm.hidden { display: none; }
+#pause-confirm .reason { margin: 16px 0 6px; font-size: 10px; }
