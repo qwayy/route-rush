@@ -54,9 +54,12 @@ const CONFIG = {
   speedEase: 1.5,            // how quickly speed eases toward its target
 
   // Steering. Phones: tilt left/right (falls back to drag). Desktop: arrows.
-  tiltSensitivity: 16,       // sideways speed per degree of tilt past the dead zone
-  tiltDeadZone: 4,           // degrees around "level" that keep the bike straight
-  tiltMaxAngle: 22,          // tilting further than this (past the dead zone) doesn't steer harder
+  tiltFullAngle: 13,         // degrees of tilt for full steering (at sensitivity 5)
+  tiltDeadZone: 2,           // degrees around "level" that keep the bike straight
+  tiltCurve: 1.6,            // >1: small tilts steer gently, bigger tilts steer hard
+  tiltMaxSteer: 380,         // sideways speed at full tilt
+  tiltSensDefault: 5,        // sensitivity slider 1..10 (start screen + pause menu, saved)
+  tiltSensStep: 1.12,        // each slider step shrinks/grows the full-tilt angle by this factor
   tiltSmoothing: 12,         // filters sensor jitter (higher = snappier, lower = smoother)
   maxLean: 0.3,              // bike lean (radians) at full sideways speed
   leanPerSpeed: 0.0022,      // lean per unit of sideways speed
@@ -74,6 +77,7 @@ const CONFIG = {
   paperCarry: 0,             // fraction of the bike's forward speed a paper keeps (0 = dead straight)
   throwHeight: 12,           // height papers fly at
   throwCooldown: 0.25,       // seconds between throws (papers are unlimited)
+  throwBuffer: 0.1,          // a tap this close to the end of the cooldown still throws (right after it)
   paperMinLx: -20,           // a paper that hits nothing flies until it's off the screen edge
   paperStep: 4,              // papers move at most this far between hit checks (no skipped hits)
 
@@ -159,6 +163,8 @@ const CONFIG = {
 
   // Kansas City extras (per-day colors/props/obstacle mixes live in THEMES)
   joggerSpeed: 70,           // joggers run toward you
+  trafficSpeedMin: 90,       // Plaza boulevard traffic drives ahead of you, slower than you
+  trafficSpeedMax: 140,
   streetcarLead: 1.9,        // seconds before you arrive that the streetcar starts across
   streetcarWarn: 1.2,        // bell + flashing lights this much earlier
   streetcarClear: 95,        // its centre is this far past the middle when you arrive
@@ -166,7 +172,6 @@ const CONFIG = {
   smokeFollow: 0.55,         // smoke drifts up the road at this fraction of your speed (lingers)
   smokeLife: 4.5,
   smokeMax: 2,
-  skylineHeight: 92,         // River Market skyline band at the top of the screen
 
   // Sound: every effect is generated in code (see 9b. SOUND). Players set the
   // volume, SFX on/off and music (your song / 8-bit / off) on the start and
@@ -185,6 +190,7 @@ const CONFIG = {
 };
 
 const BEST_KEY = 'routeRush.best';
+const TILT_KEY = 'routeRush.tiltSensitivity';
 const DAY_NAMES = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
 
 
@@ -215,7 +221,7 @@ const THEMES = [
     obstacles: { dog: 3, pothole: 3, cone: 2, car: 1, skater: 1 },
     obstacleGapScale: 1.35,                               // >1 = obstacles further apart
     smoke: 0.1,                                           // BBQ smoke puffs per smoker per second
-    streetcars: 0, skyline: false,
+    streetcars: 0,
     bonus: { jumps: { cones: 2, car: 1, fountain: 1 }, targets: { mailboxes: 3, newsstand: 1, smoker: 2 }, sideline: 'joggers', sidelineGap: 70, murals: 0 },
     music: { bpm: 118, root: 60, scale: 'major', prog: [0, 4, 5, 3], swing: 0, seed: 11 },   // 8-bit track: key, scale, chords, tempo
   },
@@ -228,20 +234,23 @@ const THEMES = [
     decor: { tree: 9, bush: 2, fountain: 1 },
     retainingWalls: 0.5, flags: 0, murals: 0, muralColors: [],
     obstacles: { jogger: 5, dog: 2, pothole: 2, car: 1, cone: 1 },
-    obstacleGapScale: 1.15, smoke: 0, streetcars: 0, skyline: false,
+    obstacleGapScale: 1.15, smoke: 0, streetcars: 0,
     bonus: { jumps: { cones: 1, car: 1, fountain: 1 }, targets: { mailboxes: 3, newsstand: 1, fountain: 1 }, sideline: 'joggers', sidelineGap: 55, murals: 0 },
     music: { bpm: 110, root: 67, scale: 'major', prog: [0, 3, 4, 0], swing: 0.05, seed: 23 },   // 8-bit track: key, scale, chords, tempo
   },
   {
-    name: 'PLAZA',                                        // Wednesday: Spanish style, red tile, fountains
-    houses: { spanish: 8, tudor: 1 },
+    name: 'PLAZA',                                        // Wednesday: Spanish/Moorish-style shopping district
+    houses: { plazaShop: 6, plazaApartment: 3 },
     ground: { ...BASE_GROUND, grass: '#58a24c', grassStripe: '#519a46', sidewalk: '#e2d3b8', sidewalkJoint: '#c8b896', curb: '#f0e6d2', street: '#3f3a3a', streetDark: '#353030', streetLight: '#4d4747' },
     trees: { green: 5, gold: 1 },
-    leaves: 0.1, leafColors: FALL_LEAVES,
-    decor: { fountain: 5, tree: 3, bush: 2 },
-    retainingWalls: 0.4, flags: 0, murals: 0, muralColors: [],
-    obstacles: { median: 3, car: 2, skater: 2, pothole: 2, cone: 2 },
-    obstacleGapScale: 1.05, smoke: 0, streetcars: 0, skyline: false,
+    leaves: 0.05, leafColors: FALL_LEAVES,
+    decor: { planter: 4, tree: 2, fountain: 1 },
+    plazas: 0.55,                                         // chance a side yard becomes a paved plaza with a grand fountain
+    lamps: 85,                                            // ornate lamp posts along the sidewalks, this far apart
+    crosswalks: 600,                                      // brick crosswalks across the boulevard, this far apart
+    retainingWalls: 0, flags: 0, murals: 0, muralColors: [],
+    obstacles: { traffic: 3, median: 3, car: 2, skater: 1, pothole: 1, cone: 1 },
+    obstacleGapScale: 1.05, smoke: 0, streetcars: 0,
     bonus: { jumps: { fountain: 3, cones: 1 }, targets: { fountain: 3, sign: 1, newsstand: 1 }, sideline: null, murals: 0 },
     music: { bpm: 112, root: 62, scale: 'mixo', prog: [0, 6, 3, 0], swing: 0.08, seed: 37 },   // 8-bit track: key, scale, chords, tempo
   },
@@ -254,7 +263,7 @@ const THEMES = [
     decor: { tree: 3, bush: 2, smoker: 3 },
     retainingWalls: 0.2, flags: 0, murals: 0, muralColors: [],
     obstacles: { car: 6, skater: 2, pothole: 2, cone: 2, dog: 1 },
-    obstacleGapScale: 0.95, smoke: 0.15, streetcars: 0, skyline: false,
+    obstacleGapScale: 0.95, smoke: 0.15, streetcars: 0,
     bonus: { jumps: { car: 2, cones: 2 }, targets: { sign: 3, newsstand: 2, smoker: 1 }, sideline: 'patios', lights: true, murals: 0 },
     music: { bpm: 126, root: 57, scale: 'minor', prog: [0, 5, 2, 6], swing: 0, seed: 41 },   // 8-bit track: key, scale, chords, tempo
   },
@@ -272,12 +281,12 @@ const THEMES = [
       ['#1f4e5f', '#e8a33d', '#f15bb5', '#9fd3f0'],
     ],
     obstacles: { car: 3, pothole: 3, cone: 3, skater: 2, dog: 1 },
-    obstacleGapScale: 0.9, smoke: 0.2, streetcars: 0, skyline: false,
+    obstacleGapScale: 0.9, smoke: 0.2, streetcars: 0,
     bonus: { jumps: { cones: 2, car: 1 }, targets: { sign: 2, smoker: 2, newsstand: 1 }, sideline: null, murals: 1 },
     music: { bpm: 100, root: 65, scale: 'dorian', prog: [0, 3, 0, 4], swing: 0.18, seed: 53 },   // 8-bit track: key, scale, chords, tempo
   },
   {
-    name: 'RIVER MARKET',                                 // Saturday: lofts, streetcar, skyline
+    name: 'RIVER MARKET',                                 // Saturday: lofts, streetcar
     houses: { loft: 6, brickblock: 3, storefront: 2 },
     ground: { ...BASE_GROUND, grass: '#4f8a42', grassStripe: '#49823d', sidewalk: '#a8644a', sidewalkJoint: '#8a4c38', curb: '#d8cfc0', street: '#34363c' },
     trees: { green: 4, orange: 1 },
@@ -288,7 +297,6 @@ const THEMES = [
     obstacles: { car: 3, pothole: 3, cone: 3, skater: 2 },
     obstacleGapScale: 0.85, smoke: 0.1,
     streetcars: 3,                                        // timed crossings on this day's route
-    skyline: true, sky: ['#1e2246', '#4a3f7a', '#d07a5a'],
     bonus: { jumps: { cones: 2, car: 2 }, targets: { newsstand: 2, sign: 2, mailboxes: 1 }, sideline: null, tracks: 2, murals: 0.2 },
     music: { bpm: 132, root: 64, scale: 'minor', prog: [0, 6, 5, 6], swing: 0, seed: 67 },   // 8-bit track: key, scale, chords, tempo
   },
@@ -301,7 +309,7 @@ const THEMES = [
     decor: { crowd: 5, grill: 4, tree: 2 },
     retainingWalls: 0.3, flags: 0.85, murals: 0, muralColors: [],
     obstacles: { fan: 5, car: 3, cone: 2, pothole: 2, dog: 1 },
-    obstacleGapScale: 0.72, smoke: 0.25, streetcars: 0, skyline: false,
+    obstacleGapScale: 0.72, smoke: 0.25, streetcars: 0,
     bonus: { jumps: { car: 2, cones: 2 }, targets: { smoker: 3, mailboxes: 1, sign: 1 }, sideline: 'crowd', sidelineGap: 60, murals: 0 },
     music: { bpm: 140, root: 62, scale: 'major', prog: [0, 3, 4, 4], swing: 0, seed: 79 },   // 8-bit track: key, scale, chords, tempo
   },
@@ -339,6 +347,17 @@ const HOUSE_STYLES = {
   brickblock: {
     finish: 'brick', roof: 'flat', wallH: [40, 50], porch: 'canopy', door: 'plain', paved: true, mural: true,
     walls: ['#8a3f30', '#9c5a3a', '#6e3a2e'], roofs: ['#4a4d55'], trims: ['#e8dcc0'],
+  },
+  // Plaza: cream/tan/peach stucco, clay tile roofs, arched windows; some
+  // get a corner bell tower or domed tower (towers: chance of each).
+  plazaShop: {
+    finish: 'stucco', roof: 'tile', roofH: 10, wallH: [30, 38], porch: 'stoop', door: 'arch', paved: true, arches: true,
+    walls: ['#f3e3c3', '#e6cfa3', '#f2c9a5', '#efd9b4'], roofs: ['#b8502f', '#c45a35', '#a84a2c'], trims: ['#6b4226', '#8a5a3a'],
+    awnings: ['#8c2f2f', '#2f5d4a', '#2b3f66', '#b8862f'], towers: { bell: 0.1, dome: 0.18 },
+  },
+  plazaApartment: {
+    finish: 'stucco', roof: 'tile', roofH: 14, wallH: [46, 56], porch: 'canopy', door: 'arch', paved: true, arches: true, balconies: true,
+    walls: ['#f2dcb8', '#ead2a8', '#f5d2b5'], roofs: ['#b8502f', '#c45a35'], trims: ['#6b4226'], towers: { bell: 0.05, dome: 0.25 },
   },
   loft: {
     finish: 'brick', roof: 'flat', wallH: [56, 66], porch: 'canopy', door: 'glass', paved: true, mural: true, tower: 0.35,
@@ -380,7 +399,7 @@ const COLORS = {
   ramp: '#e8a33d', rampStripe: '#2b2b35', barrier: '#f4f1ea', barrierStripe: '#d64545',
   perfect: '#ffd23f', good: '#3ddc84', bad: '#ff5a5f', neutral: '#ffffff', glass: '#9fd3f0', debugProperty: '#4fa3ff',
   stone: '#b9ab8f', limestone: '#d8cfb8', water: '#4f9fd8', waterLight: '#bfe6ff',
-  smoke: '#d9d6d0', smokeDark: '#b9b5ae', skyline: '#1d2033',
+  smoke: '#d9d6d0', smokeDark: '#b9b5ae', bronze: '#8a6a3a', brickPave: '#a5523f',
   rail: '#9aa0a8', tie: '#5a4130', streetcar: '#e9ecef', streetcarAccent: '#2a6f97',
   flagRed: '#d0312d', flagGold: '#f2b630',
 };
@@ -495,10 +514,10 @@ function startGame() {
 function setupDay() {
   Object.assign(game, {
     phase: 'route', time: 0, dist: 0, level: 0, housesPassedToday: 0, phaseTimer: 0,
-    throwCooldown: 0,
+    throwCooldown: 0, dayStartDelivered: game.totalDelivered,
     shake: 0, flash: 0, flashColor: COLORS.bad, crashTimer: 0, crashOutcome: '', crashReason: '',
     warnedObstacles: false, banners: [],
-    houses: [], decor: [], obstacles: [], ramps: [], targets: [], lines: [], tracks: [], smokes: [], driveways: [], lights: [], trails: [], queuedThrow: 0, combo: 0, pedalPhase: 0,
+    houses: [], decor: [], obstacles: [], ramps: [], targets: [], lines: [], tracks: [], smokes: [], driveways: [], pavedLots: [], lights: [], trails: [], queuedThrow: 0, combo: 0, pedalPhase: 0,
     flying: [], groundPapers: [], particles: [], pops: [],
     stats: {
       subs: 0, deliveries: 0, mailbox: 0, windows: 0, subWindows: 0, props: 0, targets: 0,
@@ -574,6 +593,7 @@ const CRASH_REASONS = {
   car: 'You kissed a parked car.',
   skater: 'Tangled with a skateboarder.',
   fountain: 'Took a dip in a fountain.',
+  traffic: 'Rear-ended a car on the boulevard.',
   cone: 'Plowed through the construction cones.',
   jogger: 'Collided with a jogger.',
   fan: 'Bowled over by an excited fan.',
@@ -599,6 +619,7 @@ const pointers = new Map();
 const tilt = {
   listening: false, enabled: false, denied: false,
   raw: 0, smooth: 0, base: 0, last: 0,
+  sens: clamp(parseInt(storage.get(TILT_KEY, ''), 10) || CONFIG.tiltSensDefault, 1, 10),
   needsPermission: typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function',
 };
 const isTouchDevice = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
@@ -625,15 +646,14 @@ async function requestTilt() {
 }
 function tiltActive() { return tilt.enabled && performance.now() - tilt.last < 1000; }
 function calibrateTilt() { tilt.base = tilt.smooth = tilt.raw; }
-// Sideways steering speed from tilt: dead zone first, then linear up to a cap.
+// Sideways steering speed from tilt: dead zone, then a gentle-to-hard curve up
+// to full steering at tiltFullAngle (scaled by the sensitivity slider).
 function tiltSteer() {
-  let a = tilt.smooth - tilt.base;
-  const dz = CONFIG.tiltDeadZone;
-  a = Math.abs(a) <= dz ? 0 : a - Math.sign(a) * dz;
-  return clamp(a, -CONFIG.tiltMaxAngle, CONFIG.tiltMaxAngle) * CONFIG.tiltSensitivity;
+  const a = tilt.smooth - tilt.base, dz = CONFIG.tiltDeadZone;
+  const full = CONFIG.tiltFullAngle * Math.pow(CONFIG.tiltSensStep, 5 - tilt.sens);   // higher sensitivity = less tilt needed
+  const n = clamp((Math.abs(a) - dz) / Math.max(1, full - dz), 0, 1);
+  return Math.sign(a) * Math.pow(n, CONFIG.tiltCurve) * CONFIG.tiltMaxSteer;
 }
-if (!tilt.needsPermission && window.isSecureContext) listenForTilt();
-
 // --- Touch / mouse ---
 // With tilt on, every touch is a throw (left half = left, right half =
 // right), fired on touch-down for speed. Without tilt, a pointer is "pending"
@@ -713,6 +733,7 @@ window.addEventListener('keydown', (e) => {
   else if (KEYS_RIGHT.includes(e.code)) { input.right = true; e.preventDefault(); }
   if (e.repeat) return;
   if (e.code === 'KeyH') { debug.hitAreas = !debug.hitAreas; return; }
+  if (game.state === 'over' && overUnlocked() && (e.code === 'KeyR' || e.code === 'KeyN')) { e.code === 'KeyR' ? retryDay() : startGame(); return; }
   if (e.code === 'KeyM') { cycleMusic(); return; }
   if (e.code === 'KeyP' || e.code === 'Escape') { if (game.state === 'playing') pauseGame(); else resumeGame(); return; }
   if (KEYS_THROW_LEFT.includes(e.code)) throwPaper(-1);
@@ -793,6 +814,16 @@ function layoutDay() {
   const bz0 = game.routeEndZ + CONFIG.bonusGap;
   const bonusSpeed = speedFor(game.day, CONFIG.housesPerSide * 2);
   buildBonus(bz0, bz0 + CONFIG.bonusDuration * bonusSpeed);
+  addLamps(-view.H, game.bonus.z1 + 400);
+}
+
+// Ornate lamp posts along both sidewalks (THEMES[].lamps = spacing).
+function addLamps(zFrom, zTo) {
+  const gap = theme().lamps;
+  if (!gap) return;
+  for (const side of [-1, 1]) {
+    for (let z = zFrom + (side > 0 ? gap / 2 : 0); z < zTo; z += gap) game.decor.push({ type: 'lamp', x: sideX(side, 127), z });
+  }
 }
 
 // Each lot reaches propertyMargin into its side yards, but never past the
@@ -837,15 +868,24 @@ function makeHouse(tpl, side, z, len, rng, scenery) {
     retaining: !!st.yard && rng() < th.retainingWalls,
     flags: rng() < th.flags,
     mural: st.mural && th.muralColors.length && rng() < muralChance ? pickR(th.muralColors, rng) : null,
+    spire: st.towers ? pickSpire(st.towers, rng()) : null,
     props: scenery ? [] : tpl.props.map((p) => ({ ...p, z: z + p.off, knocked: false })),
   };
 }
 
+function pickSpire(towers, r) { return r < towers.bell ? 'bell' : r < towers.bell + towers.dome ? 'dome' : null; }
+
 // Side yard between two houses: maybe a driveway, maybe a fence along the
 // lot line, then trees / fountains / smokers / crowds from the theme.
 function decorateGap(side, za, zb, rng, st) {
-  const gap = zb - za;
+  const gap = zb - za, th = theme();
   if (gap < 30) return;
+  if (th.plazas && gap > 110 && rng() < th.plazas) {   // paved plaza with a grand fountain
+    game.pavedLots.push({ side, z0: za, z1: zb });
+    game.decor.push({ type: 'grandFountain', x: sideX(side, 58), z: (za + zb) / 2, s: Math.min(1.25, (gap - 30) / 110) });
+    for (const pz of [za + 10, zb - 10]) game.decor.push({ type: 'planter', x: sideX(side, 96), z: pz, seed: (rng() * 100) | 0 });
+    return;
+  }
   let from = za;
   if (st.yard && gap > 70 && rng() < CONFIG.drivewayChance) {
     game.driveways.push({ side, z0: za + 8, z1: za + 32 });
@@ -862,6 +902,7 @@ function makeDecor(side, z, rng) {
   switch (type) {
     case 'tree': return { type, x: sideX(side, lerp(26, 52, rng())), z, pal: weightedPick(th.trees, rng) };
     case 'fountain': return { type, x: sideX(side, lerp(66, 78, rng())), z };
+    case 'planter': return { type, x: sideX(side, lerp(84, 96, rng())), z, seed: (rng() * 100) | 0 };
     case 'smoker':
     case 'grill': return { type, x: sideX(side, lerp(50, 70, rng())), z };
     case 'crowd': return { type, x: sideX(side, lerp(58, 78, rng())), z, n: 3 + ((rng() * 3) | 0), seed: (rng() * 1e6) | 0 };
@@ -1031,6 +1072,10 @@ function spawnObstacle(z) {
       game.obstacles.push({ type, z: z + 200, x, baseX: x, phase: rand(0, Math.PI * 2), w: 14, h: 14, anim: 0 });
       break;
     }
+    case 'traffic':   // a car driving up the boulevard ahead of you (slower, so you catch up to it)
+      game.obstacles.push({ type, z: z + 120, x: pick([L.bikeMinX + 16, view.W / 2, L.bikeMaxX - 16]), w: 34, h: 66,
+        color: pick(COLORS.cars), speed: rand(CONFIG.trafficSpeedMin, CONFIG.trafficSpeedMax) });
+      break;
     case 'median':   // planted island with a fountain in the middle of the road
       game.obstacles.push({ type, z, x: view.W / 2, w: 40, h: 90 });
       break;
@@ -1116,6 +1161,8 @@ function update(dt) {
       o.z -= CONFIG.joggerSpeed * dt;
       o.anim += dt * 8;
       o.x = o.baseX + Math.sin(o.phase + game.time * 1.3) * 10;
+    } else if (o.type === 'traffic') {
+      o.z += o.speed * dt;
     } else if (o.type === 'car' && !o.cross && !o.honked && o.z > game.dist &&
                (o.z - game.dist) / game.speed < CONFIG.honkLead && Math.abs(o.x - bike.x) < 60) {
       o.honked = true;   // honks as you come up on it
@@ -1271,11 +1318,15 @@ function overlapsBike(o, forgiveness) {
 // A paper is a point travelling in left-side coordinates (lx shrinks as it
 // flies outward) at a fixed height. It keeps flying until it hits something
 // or leaves the screen; nothing is decided at throw time.
-// A tap during the cooldown is remembered and thrown as soon as it ends, so
-// quick taps are never silently dropped.
+// A tap in the last throwBuffer seconds of the cooldown is remembered and
+// thrown as soon as it ends (earlier double-taps are ignored, so a late
+// buffered paper can't land somewhere you didn't aim).
 function throwPaper(side) {
   if (game.state !== 'playing') return;
-  if (game.throwCooldown > 0) { game.queuedThrow = side; return; }
+  if (game.throwCooldown > 0) {   // a tap just before the cooldown ends is thrown the moment it does
+    if (game.throwCooldown <= CONFIG.throwBuffer) game.queuedThrow = side;
+    return;
+  }
   game.throwCooldown = CONFIG.throwCooldown;
   game.queuedThrow = 0;
   sfx.throw();
@@ -2016,7 +2067,6 @@ function render(now) {
   drawSmoke();
   drawSubMarkers(t);
   drawParticles();
-  if (theme().skyline) drawSkyline();
   if (debug.hitAreas) drawHitAreas();
 
   // --- Scale the buffer up to the screen ---
@@ -2098,6 +2148,15 @@ function drawGround() {
     rectL(xa, ya, L.streetX0 - 20, ps, '#b1ab9d');
   }
 
+  // Paved plazas (Plaza side yards)
+  for (const p of game.pavedLots) {
+    const ya = sy(p.z1), yb = sy(p.z0);
+    if (yb < -10 || ya > view.H + 10) continue;
+    const xa = p.side < 0 ? -ext : view.W - L.sidewalkX0, w = L.sidewalkX0 + ext;
+    rectL(xa, ya, w, yb - ya, G.sidewalk);
+    for (let zz = p.z0 + 12; zz < p.z1; zz += 12) rectL(xa, sy(zz), w, ps, G.sidewalkJoint);
+  }
+
   // Street, speckles, curbs, centre dashes
   const stW = L.streetX1 - L.streetX0;
   rectL(L.streetX0, top, stW, tall, G.street);
@@ -2111,6 +2170,17 @@ function drawGround() {
   rectL(L.streetX1, top, ps, tall, G.curb);
   rectL(L.streetX1 - ps, top, ps, tall, G.streetDark);
   forEachWorldLine(64, (y) => rectL(view.W / 2 - ps, y - 32, ps * 2, 28, G.laneLine));
+  if (th.crosswalks) {   // brick crosswalks across the boulevard
+    forEachWorldLine(th.crosswalks, (y) => {
+      rectL(L.streetX0, y - 24, stW, 24, COLORS.brickPave);
+      for (let r = 0; r < 4; r++) {
+        for (let x = L.streetX0 + (r % 2) * 6; x < L.streetX1; x += 12) rectL(x, y - 24 + r * 6, ps, 6, shade(COLORS.brickPave, 0.72));
+        rectL(L.streetX0, y - 24 + r * 6, stW, ps * 0.5, shade(COLORS.brickPave, 0.72));
+      }
+      rectL(L.streetX0, y - 26, stW, ps, G.curb);
+      rectL(L.streetX0, y, stW, ps, G.curb);
+    });
+  }
 
   // Streetcar tracks across the whole road
   for (const tr of game.tracks) {
@@ -2150,6 +2220,7 @@ function drawHouse(h, t) {
   houseWalls(g);
   houseOpenings(g);
   if (st.roof === 'flat') flatRoof(g); else gableRoof(g);
+  if (h.spire) drawSpire(g);
   housePorch(g);
   if (h.flags) houseFlags(g);
   for (const p of h.props) drawProp(h, p);
@@ -2166,6 +2237,7 @@ function houseGround(g) {
   } else {
     q([[L.porchX1, cz - 6, 0], [L.sidewalkX0, cz - 6, 0], [L.sidewalkX0, cz + 6, 0], [L.porchX1, cz + 6, 0]], COLORS.path);
   }
+  if (h.spire) drawSpireShadow(g);
   if (h.retaining) {   // limestone retaining wall along the front yard
     for (const [a, b] of [[z0 + 2, h.mailZ - 10], [h.mailZ + 10, cz - 9], [cz + 9, z1 - 2]]) {
       if (b - a < 6) continue;
@@ -2251,6 +2323,14 @@ function houseOpenings(g) {
       quadX(wx, lo + 2, hi - 2, wh0, wh1, COLORS.window);
       quadX(wx, lo + 2, hi - 2, wh1 - 4, wh1, COLORS.windowShine);
       for (let m = lo + pane; m < hi - 8; m += pane) quadX(wx, m, m + 2, wh0, wh1, frame);
+      if (st.arches) {   // arched top on each pane (Moorish arcade look)
+        for (let m = lo + 2; m < hi - 6; m += pane) {
+          const m1 = Math.min(hi - 2, m + pane - 2), mc = (m + m1) / 2, r = (m1 - m) / 2;
+          const arc = (rr) => { const pts = []; for (let i = 0; i <= 6; i++) { const a = (i / 6) * Math.PI; pts.push([wx, mc + Math.cos(a) * rr, wh1 + Math.sin(a) * rr * 0.8]); } return pts; };
+          q(arc(r + 1.5), frame);
+          q(arc(r), COLORS.window);
+        }
+      }
     }
     // Upper floor (decoration only; papers fly at ground-floor height)
     if (WH >= 44 && !shop) {
@@ -2258,6 +2338,10 @@ function houseOpenings(g) {
       for (let m = lo + 2; m + 10 < hi; m += 16) {
         quadX(wx, m, m + 10, u0 - 1, u1 + 1, frame);
         quadX(wx, m + 1, m + 9, u0, u1, shade(COLORS.window, 0.85));
+        if (st.balconies) {   // wrought-iron balcony
+          g.box(wx, wx + 4, m - 1, m + 11, u0 - 3, u0 - 1, shade(h.wall, 0.88));
+          l3([wx + 4, m - 1, u0 + 3], [wx + 4, m + 11, u0 + 3], '#2b2b35');
+        }
       }
     }
   });
@@ -2482,6 +2566,99 @@ function drawMailbox(h, t) {
   if (h.delivered) box3(sideX(h.side, L.mailboxX + 4), sideX(h.side, L.mailboxX + 6), mz - 2, mz + 3, 14, 25, COLORS.flag);
 }
 
+// --- Plaza (Wednesday): corner towers, grand fountains, lamp posts, planters ---
+// A Plaza building can have a corner tower: a brick bell tower with a clay
+// tile pyramid cap, or a stucco tower with a small glazed-tile dome. Drawn
+// from above so the tops show; the shadow is drawn with the ground.
+const SPIRE = { x0: 50, x1: 70, off: 8, len: 20, bell: 58, dome: 34 };   // near the street front so the top stays on screen
+function spireBox(g) {
+  const za = g.z0 + SPIRE.off;
+  return { x0: SPIRE.x0, x1: SPIRE.x1, za, zb: za + SPIRE.len, top: g.WH + SPIRE[g.h.spire] };
+}
+function drawSpireShadow(g) {
+  const s = spireBox(g), len = s.top * 0.3;
+  g.q([[s.x0, s.za - len, 0], [s.x1, s.za - len, 0], [s.x1, s.zb, 0], [s.x0, s.zb, 0]], COLORS.shadow);
+}
+function drawSpire(g) {
+  const { h, q, l3, box, quadZ } = g, s = spireBox(g), cx = (s.x0 + s.x1) / 2, cz = (s.za + s.zb) / 2;
+  const dark = '#2a1d18';
+  if (h.spire === 'bell') {
+    box(s.x0, s.x1, s.za, s.zb, 0, s.top, COLORS.brick);
+    for (let v = 8; v < s.top - 18; v += 7) l3([s.x0, s.za, v], [s.x1, s.za, v], shade(COLORS.brick, 0.78));
+    for (const [a, b] of [[s.x0 + 3, cx - 1], [cx + 1, s.x1 - 3]]) {   // arched belfry openings
+      quadZ(s.za, a, b, s.top - 16, s.top - 6, dark);
+      q([[a, s.za, s.top - 6], [b, s.za, s.top - 6], [(a + b) / 2, s.za, s.top - 3]], dark);
+    }
+    box(s.x0 - 1, s.x1 + 1, s.za - 1, s.zb + 1, s.top, s.top + 2, COLORS.limestone);   // cornice
+    const apex = s.top + 18;
+    q([[s.x0 - 1, s.za - 1, s.top + 2], [s.x1 + 1, s.za - 1, s.top + 2], [cx, cz, apex]], shade(h.roof, 0.85));
+    q([[s.x1 + 1, s.za - 1, s.top + 2], [s.x1 + 1, s.zb + 1, s.top + 2], [cx, cz, apex]], h.roof);
+    l3([cx, cz, apex], [cx, cz, apex + 5], COLORS.perfect);   // finial
+  } else {
+    box(s.x0, s.x1, s.za, s.zb, 0, s.top, h.wall);
+    quadZ(s.za, cx - 3, cx + 3, s.top - 14, s.top - 4, dark);
+    box(s.x0 + 2, s.x1 - 2, s.za + 2, s.zb - 2, s.top, s.top + 5, shade(h.wall, 1.1));   // drum
+    const r = (s.x1 - s.x0) / 2 - 2, tiles = ['#1f6f73', '#2a8a8a', '#3fa3a0', '#7fd0c4'];
+    for (let k = 0; k < 6; k++) {   // stacked rings, lighter toward the top = a dome
+      const f = k / 6, rr = r * Math.sqrt(1 - f * f);
+      fillPoly(ell3(sideX(h.side, cx), cz, rr, rr * 0.9, s.top + 5 + f * r * 1.1, 14), tiles[Math.min(3, k)]);
+    }
+    l3([cx, cz, s.top + 5 + r * 1.1], [cx, cz, s.top + 11 + r * 1.1], COLORS.perfect);
+  }
+}
+
+// Multi-tier ornate fountain: wide basin, two raised bowls, a bronze figure
+// on top, water spilling over each rim. s scales the whole thing.
+function drawGrandFountain(x, z, t, s) {
+  const stone = COLORS.limestone, H1 = 16 * s, H2 = 26 * s, H3 = 34 * s;
+  fillPoly(ell3(x, z - 4, 26 * s, 17 * s, 0, 18), COLORS.shadow);
+  fillPoly(ell3(x, z, 24 * s, 16 * s, 0, 18), shade(stone, 0.68));
+  fillPoly(ell3(x, z, 24 * s, 16 * s, 6, 18), stone);
+  fillPoly(ell3(x, z, 21 * s, 14 * s, 6, 18), COLORS.water);
+  for (let i = 0; i < 8; i++) {
+    const r = ((t * 9 + i * 4) % 20) * s, a = i * 0.8;
+    pixelAt(x + Math.cos(a) * r, z + Math.sin(a) * r * 0.65, 6, COLORS.waterLight);
+  }
+  box3(x - 3 * s, x + 3 * s, z - 3 * s, z + 3 * s, 6, H1, stone);
+  fillPoly(ell3(x, z, 12 * s, 8 * s, H1, 14), shade(stone, 0.85));
+  fillPoly(ell3(x, z, 10 * s, 6.5 * s, H1 + 1, 14), COLORS.water);
+  box3(x - 2 * s, x + 2 * s, z - 2 * s, z + 2 * s, H1, H2, stone);
+  fillPoly(ell3(x, z, 6 * s, 4 * s, H2, 12), shade(stone, 0.85));
+  fillPoly(ell3(x, z, 4.5 * s, 3 * s, H2 + 1, 12), COLORS.water);
+  for (const [r, top, bottom] of [[11 * s, H1, 6], [6 * s, H2, H1]]) {   // water spilling over the rims
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2, ph = (t * 1.6 + i * 0.37) % 1;
+      pixelAt(x + Math.cos(a) * r, z + Math.sin(a) * r * 0.66, lerp(top, bottom, ph), COLORS.waterLight);
+    }
+  }
+  box3(x - 1.5 * s, x + 1.5 * s, z - s, z + s, H2, H3, COLORS.bronze);   // sculpture
+  pixelAt(x, z, H3 + 2 * s, shade(COLORS.bronze, 1.25));
+  for (let k = 0; k < 4; k++) pixelAt(x + (k - 1.5) * 2, z, H3 + 4 * s + ((t * 18 + k * 5) % 6), '#ffffff');
+}
+
+// Ornate iron lamp post with three globe lights.
+function drawLamp(d) {
+  const x = d.x, z = d.z, iron = '#2b2b35';
+  drawSpriteC(SPR.shadowS, x + 2, sy(z) + 2);
+  box3(x - 2, x + 2, z - 2, z + 2, 0, 4, iron);
+  box3(x - 1, x + 1, z - 1, z + 1, 4, 36, iron);
+  box3(x - 9, x + 9, z - 0.6, z + 0.6, 33, 34.5, iron);
+  for (const [gx, gh] of [[-9, 37], [0, 41], [9, 37]]) {
+    fillPoly(ell3(x + gx, z, 2.6, 2, gh, 8), '#fff4c2');
+    pixelAt(x + gx, z, gh + 1, '#ffffff');
+  }
+}
+
+// Terracotta planter full of flowers.
+function drawPlanter(d) {
+  const x = d.x, z = d.z, flowers = ['#ff5a5f', '#f15bb5', '#ffd23f', '#9b5de5', '#ffffff'];
+  box3(x - 6, x + 6, z - 4, z + 4, 0, 6, '#b8613f', '#5a3a24');
+  for (let i = 0; i < 8; i++) {
+    pixelAt(x - 5 + i * 1.5, z - 2 + ((i * 3) % 5), 7, '#3f8a3a');
+    if (i % 2 === 0) pixelAt(x - 5 + i * 1.5, z - 2 + ((i * 7) % 5), 9, flowers[(d.seed + i) % flowers.length]);
+  }
+}
+
 function drawDecor(d, t) {
   const y = sy(d.z);
   if (y < -20 || y - 90 > view.H) return;
@@ -2495,6 +2672,9 @@ function drawDecor(d, t) {
     case 'grill': drawGrill(d.x, d.z, t); break;
     case 'crowd': drawCrowd(d, t); break;
     case 'sidefence': drawSideFence(d); break;
+    case 'grandFountain': drawGrandFountain(d.x, d.z, t, d.s); break;
+    case 'lamp': drawLamp(d); break;
+    case 'planter': drawPlanter(d); break;
     case 'patio': drawPatio(d); break;
     case 'jogside': {   // joggers running in place along the sidewalk
       drawSpriteC(SPR.shadowS, d.x, y + 1);
@@ -2633,40 +2813,15 @@ function drawSmoke() {
   pix.globalAlpha = 1;
 }
 
-// River Market: city skyline "in the distance" across the top of the screen.
-function drawSkyline() {
-  const sky = theme().sky, H = CONFIG.skylineHeight;
-  const ps = CONFIG.pixelSize, ext = PAD * ps, W = view.W + ext * 2;
-  rectL(-ext, -ext, W, ext + H * 0.4, sky[0]);
-  rectL(-ext, H * 0.4, W, H * 0.35, sky[1]);
-  rectL(-ext, H * 0.75, W, H * 0.25, sky[2]);
-  for (let i = 0; i < W / ps; i += 2) {   // dithered band edges
-    rectL(-ext + i * ps, H * 0.4 - ps, ps, ps, sky[1]);
-    rectL(-ext + (i + 1) * ps, H * 0.75 - ps, ps, ps, sky[2]);
-  }
-  let x = -ext;
-  for (let i = 0; x < view.W + ext; i++) {
-    const w = 14 + hash(i, 1) * 24;
-    const bh = (20 + hash(i, 2) * 50) * (Math.abs(x - view.W * 0.55) < 100 ? 1.25 : 0.8);
-    rectL(x, H - bh, w - 2, bh, COLORS.skyline);
-    if (hash(i, 3) < 0.25) rectL(x + w / 2 - 2, H - bh - 10, 2, 10, COLORS.skyline);
-    for (let wy = H - bh + 4; wy < H - 4; wy += 6) {
-      for (let wxx = x + 3; wxx < x + w - 5; wxx += 5) if (hash(i * 31 + (wy | 0), wxx | 0) < 0.3) rectL(wxx, wy, ps, ps, '#ffd76a');
-    }
-    x += w;
-  }
-  for (let i = 0; i < W / ps; i += 2) rectL(-ext + i * ps, H, ps, ps, COLORS.skyline);
-}
-
-
 function drawObstacle(o, t) {
   const y = sy(o.z);
   if (y < -80 || y > view.H + 80) return;
   const ps = CONFIG.pixelSize;
   switch (o.type) {
     case 'fountain':   // bonus-course fountain in the road (jump it)
-      drawFountain(o.x, o.z, t, 1.6);
+      if (theme().plazas) drawGrandFountain(o.x, o.z, t, 1.2); else drawFountain(o.x, o.z, t, 1.6);
       break;
+    case 'traffic':
     case 'car': {
       if (o.cross) { drawCrossCar(o); break; }
       const x0 = o.x - o.w / 2, x1 = o.x + o.w / 2, z0 = o.z - o.h / 2, z1 = o.z + o.h / 2;
@@ -2704,7 +2859,7 @@ function drawObstacle(o, t) {
     case 'median': {
       const x0 = o.x - o.w / 2, x1 = o.x + o.w / 2;
       box3(x0, x1, o.z - o.h / 2, o.z + o.h / 2, 0, 3, COLORS.limestone, theme().ground.grass);
-      drawFountain(o.x, o.z, t, 0.9);
+      if (theme().plazas) drawGrandFountain(o.x, o.z, t, 0.75); else drawFountain(o.x, o.z, t, 0.9);
       break;
     }
     case 'streetcar':
@@ -2951,8 +3106,12 @@ function textShadowed(text, x, y, color) {
 
 function drawHUD() {
   const top = view.safeTop;
-  ctx.fillStyle = 'rgba(16,18,30,0.55)';
-  ctx.fillRect(0, 0, view.W, top + 62);
+  const fade = ctx.createLinearGradient(0, 0, 0, top + 84);   // subtle dark fade so the score reads over the street
+  fade.addColorStop(0, 'rgba(10,12,22,0.62)');
+  fade.addColorStop(0.6, 'rgba(10,12,22,0.3)');
+  fade.addColorStop(1, 'rgba(10,12,22,0)');
+  ctx.fillStyle = fade;
+  ctx.fillRect(0, 0, view.W, top + 84);
 
   ctx.textBaseline = 'alphabetic';
   ctx.textAlign = 'left';
@@ -3061,6 +3220,8 @@ const ui = {
   pauseBtn: document.getElementById('pause-btn'),
   resumeBtn: document.getElementById('resume-btn'),
   overTitle: document.getElementById('over-title'),
+  retryBtn: document.getElementById('retry-btn'),
+  newRunBtn: document.getElementById('newrun-btn'),
   tiltBtn: document.getElementById('tilt-btn'),
   steerMode: document.getElementById('steer-mode'),
   titleBest: document.getElementById('title-best'),
@@ -3148,6 +3309,21 @@ function showDaySummary() {
   showPanel(ui.day);
 }
 
+// Wipeout screen: replay the day you crashed on with the score you started
+// it with (same week, same neighborhood, same subscribers).
+function retryDay() {
+  game.score = game.stats.startScore;
+  game.totalDelivered = game.dayStartDelivered;
+  game.lives = CONFIG.lives;
+  setupDay();
+  if (tilt.enabled) calibrateTilt();
+  game.state = 'playing';
+  hideOverlay();
+  if (audio.settings.music !== 'off') startMusic();
+  sfx.dayStart();
+}
+function overUnlocked() { return performance.now() - game.overShownAt > CONFIG.restartLock * 1000; }
+
 function continueFromSummary() {
   game.day++;
   if (game.day >= DAY_NAMES.length) { game.day = 0; game.week++; }   // keeps going forever
@@ -3163,7 +3339,6 @@ function tryStartFromOverlay() {
   if (game.state === 'paused') { resumeGame(); return; }
   if (game.state === 'title') { maybeFullscreen(); startGame(); return; }
   if (game.state === 'summary' && unlocked) { continueFromSummary(); return; }
-  if (game.state === 'over' && unlocked) startGame();
 }
 
 // Title screen: steering status + the iPhone "enable tilt" button.
@@ -3187,8 +3362,36 @@ ui.tiltBtn.addEventListener('click', async (e) => {
   if (game.state === 'title') startGame();
 });
 
+ui.retryBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (game.state !== 'over' || !overUnlocked()) return;
+  sfx.click();
+  retryDay();
+});
+ui.newRunBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (game.state !== 'over' || !overUnlocked()) return;
+  sfx.click();
+  startGame();
+});
+
+// Tilt sensitivity slider (start screen + pause menu), saved.
+function updateTiltUI() {
+  document.querySelectorAll('.set-tilt').forEach((r) => { r.value = tilt.sens; });
+  document.querySelectorAll('.tilt-val').forEach((b) => { b.textContent = tilt.sens; });
+}
+document.querySelectorAll('.set-tilt').forEach((r) => {
+  r.addEventListener('click', (e) => e.stopPropagation());
+  r.addEventListener('input', () => {
+    tilt.sens = clamp(parseInt(r.value, 10) || CONFIG.tiltSensDefault, 1, 10);
+    storage.set(TILT_KEY, tilt.sens);
+    updateTiltUI();
+  });
+});
+updateTiltUI();
+
 ui.overlay.addEventListener('click', (e) => {
-  if (e.target.closest('#share-btn') || e.target.closest('#tilt-btn') || e.target.closest('.audio-row') || e.target.closest('#resume-btn')) return;
+  if (e.target.closest('#share-btn') || e.target.closest('#tilt-btn') || e.target.closest('.audio-row') || e.target.closest('.tilt-row') || e.target.closest('#resume-btn') || e.target.closest('.over-btns')) return;
   if (game.state === 'paused') return;   // only the Resume button unpauses
   tryStartFromOverlay();
 });

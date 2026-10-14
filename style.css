@@ -164,3 +164,12 @@ h2 { font-size: 20px; font-weight: 400; text-transform: uppercase; color: var(--
 .aud-btn.off { color: #6b7280; }
 .set-vol { flex: 1 1 100%; max-width: 220px; accent-color: var(--gold); }
 #screen-pause .share { margin-top: 16px; }
+
+/* ---------- Wipeout buttons + tilt slider ---------- */
+.over-btns { display: flex; gap: 8px; margin-top: 18px; }
+.over-btns .share { margin-top: 0; flex: 1; font-size: 11px; padding: 14px 6px; }
+.share.alt { background: #3a4150; color: #fff; }
+.share.small { margin-top: 10px; padding: 10px; font-size: 11px; }
+.tilt-row { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 10px; font-size: 9px; }
+.set-tilt { width: 140px; accent-color: var(--gold); }
+.tilt-val { min-width: 20px; color: var(--gold); font-weight: 400; }

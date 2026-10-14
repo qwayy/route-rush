@@ -35,6 +35,7 @@
         <button class="aud-btn set-music" type="button">🎵 SONG</button>
         <input class="set-vol" type="range" min="0" max="100" value="80" aria-label="Volume">
       </div>
+      <div class="tilt-row"><span>TILT</span><input class="set-tilt" type="range" min="1" max="10" step="1" value="5" aria-label="Tilt sensitivity"><b class="tilt-val">5</b></div>
       <p class="cta">Tap to start</p>
       <p class="keys">Desktop: <span class="sys">← →</span> steer · A/D throw · Space starts · P pause · M music</p>
     </section>
@@ -48,9 +49,13 @@
         <div><span class="label">Reached</span><span id="over-reached" class="value">MON W1</span></div>
       </div>
       <p id="new-best" class="new-best hidden">New best!</p>
-      <button id="share-btn" class="share" type="button">Share</button>
+      <div class="over-btns">
+        <button id="retry-btn" class="share" type="button">RETRY DAY</button>
+        <button id="newrun-btn" class="share alt" type="button">NEW RUN</button>
+      </div>
+      <button id="share-btn" class="share small" type="button">Share</button>
       <p id="toast" class="toast"></p>
-      <p class="cta">Tap anywhere to ride again</p>
+      <p class="keys">Desktop: R retry day · N new run</p>
     </section>
 
     <section id="screen-pause" class="panel hidden">
@@ -60,6 +65,7 @@
         <button class="aud-btn set-music" type="button">🎵 SONG</button>
         <input class="set-vol" type="range" min="0" max="100" value="80" aria-label="Volume">
       </div>
+      <div class="tilt-row"><span>TILT</span><input class="set-tilt" type="range" min="1" max="10" step="1" value="5" aria-label="Tilt sensitivity"><b class="tilt-val">5</b></div>
       <button id="resume-btn" class="share" type="button">Resume</button>
       <p class="keys">P or Esc also resumes</p>
     </section>
