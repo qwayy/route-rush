@@ -27,10 +27,12 @@
         <li>Porch 300 · <b class="gold">Mailbox 700</b></li>
         <li>Unlimited papers. One crash ends it.</li>
       </ul>
-      <p class="best">Best: <span id="title-best">0</span></p>
+      <p class="best">Best: <span id="title-best">0</span> · <span class="coin-ico"></span><span id="title-coins" class="gold">0</span></p>
       <div class="title-btns">
         <button id="rider-btn" class="aud-btn" type="button"><span id="title-face"></span>RIDER</button>
         <button id="medals-btn" class="aud-btn" type="button">🏅 MEDALS</button>
+        <button id="shop-btn" class="aud-btn" type="button">🛒 SHOP</button>
+        <button id="spin-btn" class="aud-btn" type="button">🎡 DAILY SPIN</button>
       </div>
       <button id="tilt-btn" class="share hidden" type="button">Tap to enable tilt</button>
       <p id="steer-mode" class="keys"></p>
@@ -40,6 +42,8 @@
         <input class="set-vol" type="range" min="0" max="100" value="80" aria-label="Volume">
       </div>
       <div class="tilt-row"><span>TILT</span><input class="set-tilt" type="range" min="1" max="10" step="1" value="5" aria-label="Tilt sensitivity"><b class="tilt-val">5</b></div>
+      <button class="restore-btn link-btn" type="button">RESTORE PURCHASES</button>
+      <p class="restore-msg keys"></p>
       <p class="cta">Tap to start</p>
       <p class="keys">Desktop: <span class="sys">← →</span> steer · A/D throw · Space starts · P pause · M music</p>
     </section>
@@ -53,6 +57,8 @@
         <div><span class="label">Reached</span><span id="over-reached" class="value">MON W1</span></div>
       </div>
       <p id="new-best" class="new-best hidden">New best!</p>
+      <p id="over-coins" class="coins-line"></p>
+      <button id="keep-btn" class="share ad-btn hidden" type="button">▶ KEEP RIDING <small>watch an ad · once per run</small></button>
       <div class="over-btns">
         <button id="retry-btn" class="share" type="button">RETRY DAY</button>
         <button id="newrun-btn" class="share alt" type="button">NEW RUN</button>
@@ -76,6 +82,8 @@
               <input class="set-vol" type="range" min="0" max="100" value="80" aria-label="Volume">
             </div>
             <div class="tilt-row"><span>TILT</span><input class="set-tilt" type="range" min="1" max="10" step="1" value="5" aria-label="Tilt sensitivity"><b class="tilt-val">5</b></div>
+            <button class="restore-btn link-btn" type="button">RESTORE PURCHASES</button>
+            <p class="restore-msg keys"></p>
           </div>
           <button id="pause-quit" class="share alt" type="button">MAIN MENU</button>
         </div>
@@ -114,6 +122,31 @@
       <button id="medals-back" class="share alt small" type="button">BACK</button>
     </section>
 
+    <section id="screen-shop" class="panel menu-panel hidden">
+      <h2>Shop</h2>
+      <p class="wallet"><span class="coin-ico"></span><b id="shop-coins">0</b></p>
+      <div id="shop-tabs" class="shop-tabs">
+        <button type="button" data-tab="outfits">OUTFITS</button>
+        <button type="button" data-tab="bikes">BIKES</button>
+        <button type="button" data-tab="papers">PAPERS</button>
+        <button type="button" data-tab="trails">TRAILS</button>
+        <button type="button" data-tab="coins">COINS</button>
+      </div>
+      <p id="shop-note" class="keys"></p>
+      <div id="shop-grid" class="shop-grid"></div>
+      <p id="shop-msg" class="toast"></p>
+      <button id="shop-debug" class="aud-btn hidden" type="button">DEBUG: +5,000 COINS</button>
+      <button id="shop-back" class="share alt small" type="button">BACK</button>
+    </section>
+
+    <section id="screen-spin" class="panel menu-panel hidden">
+      <h2>Daily Spin</h2>
+      <canvas id="spin-wheel" width="220" height="220"></canvas>
+      <p id="spin-result" class="reason"></p>
+      <button id="spin-go" class="share" type="button">▶ WATCH AD &amp; SPIN</button>
+      <button id="spin-back" class="share alt small" type="button">BACK</button>
+    </section>
+
     <section id="screen-day" class="panel hidden">
       <h2 id="day-title">Monday done</h2>
       <p id="day-place" class="place"></p>
@@ -124,7 +157,9 @@
         <li><span>Windows broken</span><b id="sum-windows">0</b></li>
         <li><span>Bonus course</span><b id="sum-bonus">0</b></li>
         <li class="total"><span>Day score</span><b id="sum-score">0</b></li>
+        <li class="coins"><span>Coins</span><b id="sum-coins">+0</b></li>
       </ul>
+      <button id="double-btn" class="share small ad-btn hidden" type="button">▶ DOUBLE COINS <small>watch an ad</small></button>
       <p id="sum-subs" class="reason"></p>
       <p id="sum-next" class="cta">Tap to continue</p>
     </section>
@@ -132,6 +167,7 @@
 
   <div id="unlock-pop" class="unlock-pop hidden"></div>
 
+  <script src="monetization.js"></script>
   <script src="game.js"></script>
 </body>
 </html>

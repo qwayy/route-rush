@@ -200,6 +200,33 @@ const CONFIG = {
   comboBonus: 0.1,           // multiplier added per step
   comboMax: 1.5,             // multiplier cap
 
+  // Coins: earned on the route, spent on cosmetics in the shop.
+  coinsProperty: 1,          // a delivery anywhere on the lot
+  coinsPorch: 2,
+  coinsMailbox: 5,
+  coinsPerfectDay: 25,
+  coinsBonusFinish: 10,      // reaching the end of the bonus course
+  trailRate: 28,             // trail particles per second (shop trails)
+  shopPrices: {              // coins; RARE items cost more
+    outfit1: 300, outfit2: 500, outfitRare: 1500,
+    'bike:red': 100, 'bike:kcblue': 200, 'bike:neon': 300, 'bike:mint': 400, 'bike:pink': 500, 'bike:bmx': 700, 'bike:chrome': 1200, 'bike:gold': 2000,
+    'paper:comic': 300, 'paper:pizza': 600, 'paper:glow': 1200, 'paper:gold': 2000,
+    'trail:smoke': 250, 'trail:leaves': 400, 'trail:confetti': 700, 'trail:sparkles': 1500,
+  },
+  spinPrizes: [              // daily spin wheel (w = weight)
+    { coins: 50, w: 3 }, { coins: 100, w: 3 }, { coins: 250, w: 2 }, { cosmetic: true, w: 1.2 },
+    { coins: 150, w: 2.5 }, { coins: 500, w: 1 }, { coins: 100, w: 3 }, { coins: 1000, w: 0.4 },
+  ],
+  spinItemMaxPrice: 800,     // a cosmetic prize is something up to this price
+  spinFallbackCoins: 500,    // ...or this many coins if you already own all of those
+
+  // Ads + purchases: all through monetization.js. Test mode shows labeled placeholder overlays.
+  MONETIZATION_TEST_MODE: true,
+  rewardedAdSeconds: 3,
+  interstitialEvery: 3,      // at most one interstitial per this many game overs
+  interstitialFreeRuns: 3,   // never during the player's first runs
+  continueInvuln: 2,         // KEEP RIDING: seconds of blinking after resuming
+
   // Rider skills: each rider has one passive skill (see RIDERS).
   sureShotMailbox: 1.4,      // Sure Shot: mailbox hit area x this
   quickArmCooldown: 0.6,     // Quick Arm: throw cooldown x this
@@ -529,12 +556,13 @@ function resetGame() {
   Object.assign(game, {
     score: 0, lives: CONFIG.lives, day: 0, week: 1, totalDelivered: 0,
     street: buildStreet(),
-    overTitle: '', overReason: '', overShownAt: 0,
+    overTitle: '', overReason: '', overShownAt: 0, runCoins: 0, continued: false, coinBump: 0,
   });
   setupDay();
 }
 
 function startGame() {
+  Monetization.noteRunStart();
   if (audio.settings.music !== 'off') startMusic();   // inside the tap that starts the run, so phones allow it
   sfx.dayStart();
   resetGame();
@@ -550,12 +578,12 @@ function setupDay() {
     throwCooldown: 0, dayStartDelivered: game.totalDelivered,
     shake: 0, flash: 0, flashColor: COLORS.bad, crashTimer: 0, crashOutcome: '', crashReason: '',
     warnedObstacles: false, banners: [],
-    houses: [], decor: [], obstacles: [], ramps: [], targets: [], lines: [], tracks: [], smokes: [], driveways: [], pavedLots: [], lights: [], trails: [], queuedThrow: 0, combo: 0, comboShield: CONFIG.comboKingForgive, secondWind: CONFIG.secondWindPerDay, pedalPhase: 0,
+    houses: [], decor: [], obstacles: [], ramps: [], targets: [], lines: [], tracks: [], smokes: [], driveways: [], pavedLots: [], lights: [], trails: [], queuedThrow: 0, trailFx: [], trailAcc: 0, combo: 0, comboShield: CONFIG.comboKingForgive, secondWind: CONFIG.secondWindPerDay, pedalPhase: 0,
     flying: [], groundPapers: [], particles: [], pops: [],
     stats: {
       subs: 0, deliveries: 0, mailbox: 0, windows: 0, subWindows: 0, props: 0, targets: 0,
       routePoints: 0, perfectBonus: 0, bonusPoints: 0, startScore: game.score,
-      perfect: false, lucky: false, bonusClean: false, added: 0,
+      perfect: false, lucky: false, bonusClean: false, added: 0, coins: 0, coinsDoubled: false,
     },
   });
   Object.assign(bike, { x: 200, vx: 0, spin: 0, crashed: false, airT: 0, h: 0, invuln: 0, wobble: 0 });
@@ -779,6 +807,7 @@ const KEYS_THROW_LEFT = ['KeyA', 'KeyZ'];
 const KEYS_THROW_RIGHT = ['KeyD', 'KeyX'];
 
 window.addEventListener('keydown', (e) => {
+  if (Monetization.isBusy()) return;   // an ad / store dialog is up
   if (KEYS_LEFT.includes(e.code)) { input.left = true; e.preventDefault(); }
   else if (KEYS_RIGHT.includes(e.code)) { input.right = true; e.preventDefault(); }
   if (e.repeat) return;
@@ -788,7 +817,11 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'KeyH') { debug.hitAreas = !debug.hitAreas; return; }
-  if (game.state === 'over' && overUnlocked() && (e.code === 'KeyR' || e.code === 'KeyN')) { e.code === 'KeyR' ? retryDay() : startGame(); return; }
+  if (game.state === 'over' && overUnlocked() && (e.code === 'KeyR' || e.code === 'KeyN')) {
+    const go = e.code === 'KeyR' ? retryDay : startGame;
+    Monetization.maybeShowInterstitial(() => { if (game.state === 'over') go(); });
+    return;
+  }
   if (e.code === 'KeyM') { cycleMusic(); return; }
   if (e.code === 'KeyP' || e.code === 'Escape') {
     if (game.state === 'playing') pauseGame();
@@ -1372,6 +1405,7 @@ function update(dt) {
   const prevX = bike.x;
   bike.x = damp(bike.x, input.steerTarget, CONFIG.steerSmoothing * (riderHas('smoothRider') ? CONFIG.smoothSteer : 1), dt);
   bike.vx = (bike.x - prevX) / dt;
+  spawnTrail(dt);
 
   // Ramps + jumping (airborne = immune to obstacles)
   if (bike.airT > 0) {
@@ -1511,6 +1545,7 @@ function finishRoute() {
     saveProgress();
     s.perfectBonus = s.routePoints * (CONFIG.perfectMultiplier - 1);
     game.score += s.perfectBonus;
+    addCoins(CONFIG.coinsPerfectDay);
     pushBanner(s.lucky ? 'LUCKY PERFECT!' : 'PERFECT DELIVERY!', `DAY POINTS x${CONFIG.perfectMultiplier}  +${s.perfectBonus}`, COLORS.perfect, CONFIG.bannerTime + 0.6);
     celebrate();
     sfx.perfect();
@@ -1520,6 +1555,7 @@ function finishRoute() {
 
 function finishBonus() {
   game.stats.bonusClean = game.bonus.clean;
+  addCoins(CONFIG.coinsBonusFinish);
   if (game.bonus.clean) {
     addPoints(bonusPts(CONFIG.pointsBonusClear));
     popText(`+${bonusPts(CONFIG.pointsBonusClear)} COURSE CLEAR!`, view.W / 2, game.dist + 140, COLORS.perfect, 24);
@@ -1550,6 +1586,8 @@ function updateFx(dt) {
   }
   game.particles = game.particles.filter((p) => p.life > 0);
   for (const p of game.pops) { p.y -= 38 * dt; p.life -= dt; }
+  if (game.trailFx) updateTrailFx(dt);
+  game.coinBump = Math.max(0, (game.coinBump || 0) - dt);
   game.pops = game.pops.filter((p) => p.life > 0);
   if (game.trails) { for (const tr of game.trails) tr.life -= dt; game.trails = game.trails.filter((tr) => tr.life > 0); }
 }
@@ -1807,6 +1845,7 @@ function deliverTo(h, kind, x, z) {
   deliver(h);
   const mult = comboMult(), pts = Math.round(d.points() * mult / 10) * 10;
   addPoints(pts);
+  addCoins({ mailbox: CONFIG.coinsMailbox, porch: CONFIG.coinsPorch, property: CONFIG.coinsProperty }[kind]);
   sfx[kind](game.combo++);   // success blip climbs with each delivery in a row
   popText(`+${pts} ${d.label}`, x, z, d.color, d.size);
   const king = riderHas('comboKing');
@@ -2385,7 +2424,8 @@ function render(now) {
   // --- World into the pixel buffer ---
   drawGround();
   for (const o of game.obstacles) if (o.type === 'pothole') drawSpriteC(SPR.pothole, o.x, sy(o.z));
-  for (const p of game.groundPapers) drawSpriteC(SPR.paper, p.x, sy(p.z), p.rot);
+  for (const p of game.groundPapers) drawPaperAt(p.x, sy(p.z), p.rot);
+  drawTrailFx(t);
 
   // Painter's order: far things first so near things overlap them.
   const items = [];
@@ -3381,7 +3421,7 @@ function drawFlyingPaper(p) {
   const x = sideX(p.side, p.lx);
   drawSpriteC(SPR.shadowS, x, sy(p.z));
   const [px, py] = proj(x, p.z, p.h);
-  drawSpriteC(SPR.paper, px, py, p.rot);
+  drawPaperAt(px, py, p.rot);
 }
 
 function drawParticles() {
@@ -3490,6 +3530,11 @@ function drawHUD() {
   ctx.textAlign = 'left';
   ctx.font = `20px ${FONT}`;
   textShadowed(String(game.score), 12, top + 32, '#fff');
+  const cx = 12 + ctx.measureText(String(game.score)).width + 12, cs3 = 3 + (game.coinBump > 0 ? 1 : 0);   // coins, small, next to the score
+  ctx.drawImage(SPR.coin, cx, top + 30 - 5 * cs3 + (cs3 > 3 ? 1 : 0), 5 * cs3, 5 * cs3);
+  ctx.font = `10px ${FONT}`;
+  textShadowed(wallet.toLocaleString('en-US'), cx + 5 * cs3 + 5, top + 30, COLORS.perfect);
+  ctx.font = `20px ${FONT}`;
   ctx.font = `8px ${FONT}`;
   const s = game.stats;
   textShadowed(`W${game.week} ${DAY_NAMES[game.day].slice(0, 3)} ${theme().name}  ${s.deliveries}/${s.subs}`, 12, top + 50, '#b8c0cc');
@@ -3630,6 +3675,8 @@ function showPanel(panel) {
 
 function showTitle() {
   game.state = 'title';
+  updateWalletUI();
+  spinUIState();
   ui.titleBest.textContent = best;
   updateSteerUI();
   showPanel(ui.title);
@@ -3649,6 +3696,9 @@ function showGameOver() {
   ui.reached.textContent = `${DAY_NAMES[game.day].slice(0, 3)} W${game.week}`;   // furthest day / week
   ui.newBest.classList.toggle('hidden', !isNewBest || best === 0);
   ui.toast.textContent = '';
+  adUI.overCoins.textContent = `+${game.runCoins} coins this run`;
+  adUI.keep.classList.toggle('hidden', game.continued || game.overTitle !== 'Wipeout!');   // once per run
+  Monetization.noteGameOver();
   showPanel(ui.over);
 }
 
@@ -3679,6 +3729,8 @@ function showDaySummary() {
   ui.sumWindows.textContent = s.windows;
   ui.sumBonus.textContent = s.bonusClean ? `${s.bonusPoints} CLEAR` : s.bonusPoints;
   ui.sumScore.textContent = game.score - s.startScore;
+  adUI.sumCoins.textContent = `+${s.coins}`;
+  adUI.double.classList.toggle('hidden', !s.coins || s.coinsDoubled);
   const parts = [];
   if (s.added) parts.push('Perfect day: +1 new subscriber');
   parts.push(`${subsNext} subscriber${subsNext === 1 ? '' : 's'} tomorrow`);
@@ -3750,13 +3802,13 @@ ui.retryBtn.addEventListener('click', (e) => {
   e.stopPropagation();
   if (game.state !== 'over' || !overUnlocked()) return;
   sfx.click();
-  retryDay();
+  Monetization.maybeShowInterstitial(() => { if (game.state === 'over') retryDay(); });
 });
 ui.newRunBtn.addEventListener('click', (e) => {
   e.stopPropagation();
   if (game.state !== 'over' || !overUnlocked()) return;
   sfx.click();
-  startGame();
+  Monetization.maybeShowInterstitial(() => { if (game.state === 'over') startGame(); });
 });
 
 // Tilt sensitivity slider (start screen + pause menu), saved.
@@ -3775,7 +3827,7 @@ document.querySelectorAll('.set-tilt').forEach((r) => {
 updateTiltUI();
 
 ui.overlay.addEventListener('click', (e) => {
-  if (e.target.closest('#share-btn') || e.target.closest('#tilt-btn') || e.target.closest('.audio-row') || e.target.closest('.tilt-row') || e.target.closest('#resume-btn') || e.target.closest('.over-btns') || e.target.closest('.title-btns') || e.target.closest('.menu-panel')) return;
+  if (e.target.closest('#share-btn') || e.target.closest('#tilt-btn') || e.target.closest('.audio-row') || e.target.closest('.tilt-row') || e.target.closest('#resume-btn') || e.target.closest('.over-btns') || e.target.closest('.title-btns') || e.target.closest('.menu-panel') || e.target.closest('.ad-btn') || e.target.closest('.restore-btn')) return;
   if (game.state === 'paused') return;   // only the Resume button unpauses
   tryStartFromOverlay();
 });
@@ -4230,6 +4282,482 @@ updateAudioUI();
 
 
 // ---------------------------------------------------------------------
+// 9d. COINS, SHOP, DAILY SPIN
+// Coins are earned on the route and spent on cosmetics only (outfits, bike
+// colors, paper styles, trails). Riders with skills are never sold. Every ad
+// and real-money purchase goes through monetization.js (Monetization.*).
+// ---------------------------------------------------------------------
+const COINS_KEY = 'routeRush.coins';
+const SHOP_KEY = 'routeRush.shop';
+const SPIN_KEY = 'routeRush.dailySpin';
+
+let wallet = Math.max(0, parseInt(storage.get(COINS_KEY, '0'), 10) || 0);
+function saveWallet() { storage.set(COINS_KEY, wallet); }
+// Coins earned during a run (route events).
+function addCoins(n) {
+  if (!n) return;
+  wallet += n;
+  game.runCoins = (game.runCoins || 0) + n;
+  if (game.stats) game.stats.coins = (game.stats.coins || 0) + n;
+  game.coinBump = 0.25;
+  saveWallet();
+}
+function giveCoins(n) { wallet += n; saveWallet(); updateWalletUI(); }   // shop / spin / purchases
+
+// --- Catalog (prices live in CONFIG.shopPrices) ---
+const OUTFIT_SETS = [
+  { name: 'NIGHT SHIFT', shirt: '#2b2b35', pants: '#1a1c2c', helmet: '#ffd23f' },
+  { name: 'FOUNTAIN TEAL', shirt: '#2a8a8a', pants: '#f2e6c8', helmet: '#f7f4ea' },
+  { name: 'BBQ RED', shirt: '#b8322f', pants: '#2b2b35', helmet: '#f2e6c8' },
+  { name: 'JAZZ PURPLE', shirt: '#6f3fb0', pants: '#1a1c2c', helmet: '#ffd23f' },
+  { name: 'FALL LEAVES', shirt: '#e07a2e', pants: '#5a3a24', helmet: '#3f8a3a' },
+];
+const OUTFIT_RARE = { name: 'SUNBURST', shirt: '#ffd23f', pants: '#3a2a6b', helmet: '#ff8c42', rare: true };
+function outfitsFor(r) {
+  const i = RIDERS.indexOf(r);
+  const sets = [OUTFIT_SETS[i % 5], OUTFIT_SETS[(i + 2) % 5], OUTFIT_RARE];
+  return [
+    { id: `outfit:${r.id}:0`, name: 'ORIGINAL', shirt: r.shirt, pants: r.pants, helmet: r.helmet, free: true },
+    ...sets.map((o, k) => ({ ...o, id: `outfit:${r.id}:${k + 1}`, tier: o.rare ? 'outfitRare' : k ? 'outfit2' : 'outfit1' })),
+  ];
+}
+const BIKES = [
+  { id: 'bike:stock', name: 'STOCK', frame: '#a7b0ba', bar: '#a7b0ba', tire: '#2b2b35', free: true },
+  { id: 'bike:red', name: 'CLASSIC RED', frame: '#d64545', bar: '#e8e8e8', tire: '#2b2b35' },
+  { id: 'bike:kcblue', name: 'KC BLUE', frame: '#3a7bd5', bar: '#e8e8e8', tire: '#2b2b35' },
+  { id: 'bike:neon', name: 'NEON GREEN', frame: '#7dff4f', bar: '#1a1c2c', tire: '#16201a' },
+  { id: 'bike:mint', name: 'MINT CRUISER', frame: '#7fd0c4', bar: '#f7f4ea', tire: '#f7f4ea' },
+  { id: 'bike:pink', name: 'HOT PINK', frame: '#f15bb5', bar: '#f7f4ea', tire: '#2b2b35' },
+  { id: 'bike:bmx', name: 'MIDNIGHT BMX', frame: '#1a1c2c', bar: '#ff8c42', tire: '#0e0f16' },
+  { id: 'bike:chrome', name: 'CHROME', frame: '#e8edf2', bar: '#ffffff', tire: '#4a4f5a', rare: true },
+  { id: 'bike:gold', name: 'SOLID GOLD', frame: '#ffd23f', bar: '#fff2a8', tire: '#7a5a12', rare: true },
+];
+const PAPERS = [
+  { id: 'paper:classic', name: 'CLASSIC', free: true },
+  { id: 'paper:comic', name: 'ROLLED COMIC' },
+  { id: 'paper:pizza', name: 'PIZZA BOX' },
+  { id: 'paper:glow', name: 'GLOWING', rare: true },
+  { id: 'paper:gold', name: 'GOLD PAPER', rare: true },
+];
+const TRAILS = [
+  { id: 'trail:none', name: 'NONE', free: true },
+  { id: 'trail:smoke', name: 'SMOKE PUFF', colors: ['#d8d8d8', '#b8b8b8'] },
+  { id: 'trail:leaves', name: 'LEAVES', colors: ['#e07a2e', '#c9452f', '#e8b33a', '#4a9a3e'] },
+  { id: 'trail:confetti', name: 'CONFETTI', colors: ['#ffd23f', '#ff5a5f', '#2ec4b6', '#3a7bd5', '#f15bb5'] },
+  { id: 'trail:sparkles', name: 'SPARKLES', colors: ['#fff7d6', '#ffd23f', '#ffffff'], rare: true },
+];
+const SHOP_TABS = { outfits: 'OUTFITS', bikes: 'BIKES', papers: 'PAPERS', trails: 'TRAILS', coins: 'COINS' };
+function itemPrice(it) { return it.free ? 0 : CONFIG.shopPrices[it.tier || it.id] || 0; }
+
+// Paper styles (7 px wide like the classic one).
+SPR.paper_classic = SPR.paper;
+SPR.paper_comic = spriteFromArt(['.kkkkk.', 'kcmycmk', '.kkkkk.'], { k: PAL.k, c: '#2ec4b6', m: '#f15bb5', y: '#ffd23f' });
+SPR.paper_pizza = spriteFromArt(['kkkkkkk', 'kbbbbbk', 'kbBrBbk', 'kbbbbbk', 'kkkkkkk'], { k: '#5a3a24', b: '#c9894f', B: '#e0ac7e', r: '#d64545' });
+SPR.paper_glow = spriteFromArt(['.kkkkk.', 'kwwywwk', '.kkkkk.'], { k: '#c9921e', w: '#fffbe6', y: '#ffd23f' });
+SPR.paper_gold = spriteFromArt(['.kkkkk.', 'kaaYaak', '.kkkkk.'], { k: '#7a5a12', a: '#ffd23f', Y: '#fff2a8' });
+SPR.paperHalo = spriteFromFn(13, 9, (px) => {
+  for (let y = 0; y < 9; y++) for (let x = 0; x < 13; x++) {
+    const d = ((x + 0.5 - 6.5) / 6.5) ** 2 + ((y + 0.5 - 4.5) / 4.5) ** 2;
+    if (d <= 1) px(x, y, d < 0.45 ? 'rgba(255,240,150,0.55)' : 'rgba(255,230,120,0.28)');
+  }
+});
+SPR.noAds = spriteFromArt([   // "AD" crossed out
+  '..rrrrr..',
+  '.r.....r.',
+  'r.ww.wwrr',
+  'rw.wrw.wr',
+  'rwwwrw.wr',
+  'rw.rrw.wr',
+  'rrw.ww..r',
+  '.r.....r.',
+  '..rrrrr..',
+], { r: '#ff5a5f', w: '#f7f4ea' });
+SPR.coin = spriteFromArt(['.kkk.', 'kaYak', 'kaYak', 'kaYak', '.kkk.'], { k: '#7a5a12', a: '#ffd23f', Y: '#fff2a8' });
+
+// --- Owned + equipped ---
+const shop = (() => {
+  const base = { owned: {}, equipped: { bike: 'bike:stock', paper: 'paper:classic', trail: 'trail:none', outfit: {} } };
+  try {
+    const s = JSON.parse(storage.get(SHOP_KEY, '{}')) || {};
+    return { owned: { ...(s.owned || {}) }, equipped: { ...base.equipped, ...(s.equipped || {}), outfit: { ...((s.equipped || {}).outfit || {}) } } };
+  } catch (e) { return base; }
+})();
+function saveShop() { storage.set(SHOP_KEY, JSON.stringify(shop)); }
+function owned(it) { return it.free || !!shop.owned[it.id]; }
+function equippedBike() { return BIKES.find((b) => b.id === shop.equipped.bike) || BIKES[0]; }
+function equippedPaper() { return (shop.equipped.paper || 'paper:classic').split(':')[1]; }
+function equippedTrail() { return TRAILS.find((t) => t.id === shop.equipped.trail) || TRAILS[0]; }
+function outfitOf(r) {
+  const list = outfitsFor(r);
+  return list.find((o) => o.id === shop.equipped.outfit[r.id]) || list[0];
+}
+// A rider with their equipped outfit colors (used everywhere the rider is drawn).
+function look(r) { const o = outfitOf(r); return { ...r, shirt: o.shirt, pants: o.pants, helmet: o.helmet }; }
+function paperSprite() { return SPR['paper_' + equippedPaper()] || SPR.paper; }
+function drawPaperAt(x, y, rot) {
+  if (equippedPaper() === 'glow') drawSpriteC(SPR.paperHalo, x, y);
+  drawSpriteC(paperSprite(), x, y, rot);
+}
+
+// --- Trails behind the bike ---
+function spawnTrail(dt) {
+  const tr = equippedTrail();
+  if (!tr.colors || bike.crashed) return;
+  game.trailAcc = (game.trailAcc || 0) + dt * CONFIG.trailRate;
+  while (game.trailAcc >= 1 && game.trailFx.length < 140) {
+    game.trailAcc--;
+    const kind = tr.id.split(':')[1], col = pick(tr.colors);
+    const p = { kind, color: col, x: bike.x + rand(-4, 4), z: game.dist - CONFIG.bikeHalfL + rand(-2, 4), h: bike.h + rand(1, 6), vx: 0, vz: 0, vh: 0, life: 0.7, max: 0.7 };
+    if (kind === 'smoke') Object.assign(p, { h: bike.h + 2, vh: 10, life: 0.8, max: 0.8 });
+    if (kind === 'leaves') Object.assign(p, { vx: rand(-25, 25), vh: rand(10, 30), life: 0.9, max: 0.9 });
+    if (kind === 'confetti') Object.assign(p, { vx: rand(-45, 45), vh: rand(30, 70), life: 0.8, max: 0.8 });
+    if (kind === 'sparkles') Object.assign(p, { vx: rand(-12, 12), vh: rand(5, 25), life: 0.55, max: 0.55 });
+    game.trailFx.push(p);
+  }
+}
+function updateTrailFx(dt) {
+  for (const p of game.trailFx) {
+    p.x += p.vx * dt; p.z += p.vz * dt;
+    if (p.kind === 'leaves') p.x += Math.sin(p.life * 12) * 20 * dt;
+    if (p.kind !== 'smoke') p.vh -= (p.kind === 'confetti' ? 140 : 60) * dt;
+    p.h = Math.max(0, p.h + p.vh * dt);
+    p.life -= dt;
+  }
+  game.trailFx = game.trailFx.filter((p) => p.life > 0);
+}
+function drawTrailFx(t) {
+  for (const p of game.trailFx) {
+    const a = clamp(p.life / p.max, 0, 1), [x, y] = proj(p.x, p.z, p.h);
+    const px = Math.round(bx(x)), py = Math.round(by(y));
+    pix.fillStyle = p.color;
+    if (p.kind === 'smoke') {
+      const s = 1 + Math.round((1 - a) * 3);
+      pix.globalAlpha = a * 0.6;
+      pix.fillRect(px - (s >> 1), py - (s >> 1), s, s);
+    } else if (p.kind === 'sparkles') {
+      pix.globalAlpha = Math.floor(t * 20 + p.x) % 3 ? a : a * 0.3;
+      pix.fillRect(px, py, 1, 1);
+      if (a > 0.5) { pix.fillRect(px - 1, py, 3, 1); pix.fillRect(px, py - 1, 1, 3); }
+    } else {
+      pix.globalAlpha = a;
+      pix.fillRect(px, py, p.kind === 'confetti' && Math.floor(t * 10 + p.z) % 2 ? 2 : 1, 1);
+    }
+  }
+  pix.globalAlpha = 1;
+}
+
+// --- Previews ---
+function makeBikeIcon(b) {   // side view
+  const T = b.tire, F = b.frame, B = b.bar;
+  return spriteFromFn(22, 14, (px) => {
+    const wheel = (cx) => { for (let y = 0; y < 14; y++) for (let x = 0; x < 22; x++) { const d = Math.hypot(x + 0.5 - cx, y + 0.5 - 9.5); if (d <= 4.2 && d > 2.9) px(x, y, T); else if (d <= 0.8) px(x, y, '#9aa0a8'); } };
+    wheel(5); wheel(17);
+    for (let i = 0; i <= 6; i++) { px(5 + i, 9 - Math.round(i * 0.7), F); px(11 + i, 5 + Math.round(i * 0.55), F); px(8 + Math.round(i * 0.6), 5, F); }
+    px(11, 9, F); px(10, 9, F); px(12, 8, F);
+    for (let i = 0; i < 4; i++) px(7 + i, 3, PAL.k);   // seat
+    px(16, 3, B); px(17, 2, B); px(18, 2, B); px(16, 4, F);   // handlebar
+  });
+}
+function makeTrailIcon(tr) {
+  const c = makeCanvas(22, 14), g = c.getContext('2d');
+  if (!tr.colors) { g.fillStyle = '#4a4f5a'; g.fillRect(4, 6, 14, 2); return c; }
+  for (let i = 0; i < 18; i++) {
+    g.fillStyle = tr.colors[i % tr.colors.length];
+    g.globalAlpha = 1 - i / 22;
+    const x = 20 - i, y = 7 + Math.round(Math.sin(i * 1.3) * (tr.id === 'trail:smoke' ? 1 : 4));
+    const s = tr.id === 'trail:smoke' ? 2 + (i >> 3) : 1;
+    g.fillRect(x, y, s, s);
+  }
+  return c;
+}
+function makePaperIcon(id) {
+  const src = SPR['paper_' + id.split(':')[1]], c = makeCanvas(15, 11), g = c.getContext('2d');
+  if (id === 'paper:glow') g.drawImage(SPR.paperHalo, 1, 1);
+  g.drawImage(src, (15 - src.width) >> 1, (11 - src.height) >> 1);
+  return c;
+}
+
+// --- Shop UI ---
+const shopUI = {
+  panel: document.getElementById('screen-shop'),
+  tabs: document.getElementById('shop-tabs'),
+  grid: document.getElementById('shop-grid'),
+  coins: document.getElementById('shop-coins'),
+  note: document.getElementById('shop-note'),
+  msg: document.getElementById('shop-msg'),
+  debugBtn: document.getElementById('shop-debug'),
+  titleCoins: document.getElementById('title-coins'),
+  spinBtn: document.getElementById('spin-btn'),
+};
+let shopTab = 'outfits';
+function updateWalletUI() {
+  shopUI.coins.textContent = wallet.toLocaleString('en-US');
+  shopUI.titleCoins.textContent = wallet.toLocaleString('en-US');
+}
+function shopItems(tab) {
+  if (tab === 'outfits') return outfitsFor(curRider());
+  return { bikes: BIKES, papers: PAPERS, trails: TRAILS }[tab] || [];
+}
+function isEquipped(it) {
+  if (it.id.startsWith('outfit:')) return outfitOf(curRider()).id === it.id;
+  return Object.values(shop.equipped).includes(it.id);
+}
+function equip(it) {
+  const [kind] = it.id.split(':');
+  if (kind === 'outfit') shop.equipped.outfit[curRider().id] = it.id;
+  else shop.equipped[kind] = it.id;
+  saveShop();
+  applyRider();
+  updateTitleRider();
+}
+function previewFor(it) {
+  const [kind] = it.id.split(':');
+  if (kind === 'outfit') return cloneCanvas(riderPerson(curRider(), { shirt: it.shirt, pants: it.pants, helmet: it.helmet, bag: true }));
+  if (kind === 'bike') return makeBikeIcon(it);
+  if (kind === 'paper') return makePaperIcon(it.id);
+  return makeTrailIcon(it);
+}
+function renderShop() {
+  updateWalletUI();
+  shopUI.tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('sel', b.dataset.tab === shopTab));
+  shopUI.debugBtn.classList.toggle('hidden', !debug.hitAreas);
+  shopUI.grid.innerHTML = '';
+  shopUI.note.textContent = shopTab === 'outfits' ? `Outfits for ${curRider().name}. Cosmetic only.` : shopTab === 'coins' ? 'Real-money purchases (placeholder store).' : 'Cosmetic only. Same speed and controls.';
+  if (shopTab === 'coins') { renderStore(); return; }
+  for (const it of shopItems(shopTab)) {
+    const card = document.createElement('div');
+    card.className = 'shop-item' + (it.rare ? ' rare' : '');
+    const pv = previewFor(it);
+    pv.className = 'px ' + it.id.split(':')[0];
+    card.appendChild(pv);
+    const name = document.createElement('span');
+    name.className = 'shop-name';
+    name.textContent = it.name;
+    card.appendChild(name);
+    if (it.rare) { const r = document.createElement('i'); r.textContent = 'RARE'; card.appendChild(r); }
+    const b = document.createElement('button');
+    b.type = 'button';
+    const price = itemPrice(it);
+    if (isEquipped(it)) { b.textContent = 'EQUIPPED'; b.className = 'aud-btn equipped'; b.disabled = true; }
+    else if (owned(it)) { b.textContent = 'EQUIP'; b.className = 'aud-btn'; }
+    else { b.innerHTML = `BUY <span class="coin-ico"></span>${price.toLocaleString('en-US')}`; b.className = 'aud-btn buy' + (wallet < price ? ' poor' : ''); }
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (owned(it)) { sfx.click(); equip(it); renderShop(); return; }
+      if (wallet < price) { shopUI.msg.textContent = `Need ${(price - wallet).toLocaleString('en-US')} more coins.`; return; }
+      wallet -= price; saveWallet();
+      shop.owned[it.id] = 1; saveShop();
+      sfx.mailbox(0);
+      shopUI.msg.textContent = `${it.name} unlocked! Tap EQUIP to use it.`;
+      renderShop();
+    });
+    card.appendChild(b);
+    shopUI.grid.appendChild(card);
+  }
+}
+// Coin packs + Remove Ads: real-money products, all through Monetization.
+function renderStore() {
+  for (const p of Object.values(Monetization.PRODUCTS)) {
+    const card = document.createElement('div');
+    card.className = 'shop-item store';
+    const icon = cloneCanvas(p.coins ? SPR.coin : SPR.noAds);
+    icon.className = 'px coinpack';
+    card.appendChild(icon);
+    const name = document.createElement('span');
+    name.className = 'shop-name';
+    name.textContent = p.title;
+    card.appendChild(name);
+    const b = document.createElement('button');
+    b.type = 'button';
+    const have = p.type === 'nonconsumable' && Monetization.owns(p.id);
+    b.textContent = have ? 'OWNED' : p.price;
+    b.className = 'aud-btn' + (have ? ' equipped' : ' buy');
+    b.disabled = have;
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sfx.click();
+      Monetization.purchase(p.id, (prod) => {
+        if (prod.coins) { giveCoins(prod.coins); shopUI.msg.textContent = `+${prod.coins.toLocaleString('en-US')} coins!`; }
+        else shopUI.msg.textContent = `${prod.title}: done. Thanks!`;
+        renderShop();
+      }, (why) => { if (why !== 'cancelled') shopUI.msg.textContent = `Purchase failed: ${why}`; });
+    });
+    card.appendChild(b);
+    shopUI.grid.appendChild(card);
+  }
+}
+function showShop(tab) {
+  game.state = 'menu';
+  if (tab) shopTab = tab;
+  shopUI.msg.textContent = '';
+  renderShop();
+  showPanel(shopUI.panel);
+}
+shopUI.tabs.querySelectorAll('button').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); shopTab = b.dataset.tab; shopUI.msg.textContent = ''; renderShop(); }));
+document.getElementById('shop-btn').addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showShop(); });
+document.getElementById('shop-back').addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showTitle(); });
+shopUI.debugBtn.addEventListener('click', (e) => { e.stopPropagation(); giveCoins(5000); shopUI.msg.textContent = 'DEBUG: +5,000 coins'; renderShop(); });
+document.querySelectorAll('.restore-btn').forEach((b) => b.addEventListener('click', (e) => {
+  e.stopPropagation();
+  sfx.click();
+  Monetization.restorePurchases((list) => {
+    const msg = list.length ? `Restored: ${list.join(', ')} (placeholder)` : 'Nothing to restore (placeholder)';
+    document.querySelectorAll('.restore-msg').forEach((m) => { m.textContent = msg; });
+  });
+}));
+updateWalletUI();
+
+// --- Daily spin (once per real day, after an optional rewarded ad) ---
+const spinUI = {
+  panel: document.getElementById('screen-spin'),
+  wheel: document.getElementById('spin-wheel'),
+  result: document.getElementById('spin-result'),
+  go: document.getElementById('spin-go'),
+};
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; };
+function spunToday() { return storage.get(SPIN_KEY, '') === today(); }
+const spin = { angle: 0, spinning: false };
+function drawWheel() {
+  const c = spinUI.wheel, g = c.getContext('2d'), P = CONFIG.spinPrizes, n = P.length, R = c.width / 2;
+  g.clearRect(0, 0, c.width, c.height);
+  g.save();
+  g.translate(R, R);
+  g.rotate(spin.angle);
+  const cols = ['#ffd23f', '#2ec4b6', '#ff5a5f', '#3a7bd5', '#f15bb5', '#3fa34d', '#ff8c42', '#9b5de5'];
+  for (let i = 0; i < n; i++) {
+    g.beginPath(); g.moveTo(0, 0);
+    g.arc(0, 0, R - 6, (i / n) * Math.PI * 2 - Math.PI / 2, ((i + 1) / n) * Math.PI * 2 - Math.PI / 2);
+    g.closePath(); g.fillStyle = cols[i % cols.length]; g.fill();
+    g.strokeStyle = '#1a1c2c'; g.lineWidth = 3; g.stroke();
+    g.save();
+    g.rotate(((i + 0.5) / n) * Math.PI * 2);
+    g.fillStyle = '#1a1c2c'; g.font = `10px ${FONT}`; g.textAlign = 'center';
+    g.fillText(P[i].cosmetic ? 'ITEM' : String(P[i].coins), 0, -R + 30);
+    g.restore();
+  }
+  g.restore();
+  g.fillStyle = '#1a1c2c'; g.beginPath(); g.arc(R, R, 14, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#f6f3ea'; g.beginPath(); g.moveTo(R - 10, 2); g.lineTo(R + 10, 2); g.lineTo(R, 22); g.closePath(); g.fill();   // pointer
+}
+function spinUIState() {
+  const done = spunToday();
+  spinUI.go.disabled = done || spin.spinning;
+  spinUI.go.textContent = done ? 'COME BACK TOMORROW' : '▶ WATCH AD & SPIN';
+  shopUI.spinBtn.textContent = done ? '🎡 SPUN TODAY' : '🎡 DAILY SPIN';
+  shopUI.spinBtn.classList.toggle('done', done);
+}
+function showSpin() {
+  game.state = 'menu';
+  spinUI.result.textContent = spunToday() ? 'You already spun today.' : 'Optional: watch a short ad for one free spin.';
+  spinUIState();
+  drawWheel();
+  showPanel(spinUI.panel);
+}
+function randomCosmetic() {
+  const pool = [...outfitsFor(curRider()), ...BIKES, ...PAPERS, ...TRAILS].filter((it) => !owned(it) && itemPrice(it) <= CONFIG.spinItemMaxPrice);
+  return pool.length ? pick(pool) : null;
+}
+function doSpin() {
+  const P = CONFIG.spinPrizes, idx = P.indexOf(weightedPickObj(P));
+  storage.set(SPIN_KEY, today());   // used up as soon as the reward is earned
+  spin.spinning = true;
+  spinUIState();
+  const n = P.length, start = spin.angle, turns = 5;
+  const target = turns * Math.PI * 2 - ((idx + 0.5) / n) * Math.PI * 2;
+  const end = start - (start % (Math.PI * 2)) + target, t0 = performance.now(), dur = 3000;
+  let finished = false;
+  const step = (now) => {
+    if (finished) return;
+    const k = clamp((now - t0) / dur, 0, 1);
+    spin.angle = lerp(start, end, 1 - Math.pow(1 - k, 3));
+    drawWheel();
+    if (k < 1) { requestAnimationFrame(step); return; }
+    finished = true;
+    spin.spinning = false;
+    const prize = P[idx];
+    let text;
+    if (prize.cosmetic) {
+      const it = randomCosmetic();
+      if (it) { shop.owned[it.id] = 1; saveShop(); text = `You won: ${it.name}! (equip it in the shop)`; }
+      else { giveCoins(CONFIG.spinFallbackCoins); text = `You won ${CONFIG.spinFallbackCoins} coins!`; }
+    } else { giveCoins(prize.coins); text = `You won ${prize.coins} coins!`; }
+    spinUI.result.textContent = text;
+    sfx.perfect();
+    spinUIState();
+  };
+  requestAnimationFrame(step);
+  setTimeout(() => step(t0 + dur), dur + 150);   // finish even if animation frames are paused (hidden tab)
+}
+function weightedPickObj(list) {
+  let r = Math.random() * list.reduce((n, p) => n + p.w, 0);
+  for (const p of list) { r -= p.w; if (r <= 0) return p; }
+  return list[list.length - 1];
+}
+spinUI.go.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (spunToday() || spin.spinning) return;
+  sfx.click();
+  Monetization.showRewardedAd('daily_spin', () => doSpin(), () => { spinUI.result.textContent = 'No spin: the ad was closed early.'; });
+});
+shopUI.spinBtn.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showSpin(); });
+document.getElementById('spin-back').addEventListener('click', (e) => { e.stopPropagation(); if (spin.spinning) return; sfx.click(); showTitle(); });
+spinUIState();
+
+// --- Rewarded placements on the WIPEOUT and end-of-day screens ---
+const adUI = {
+  keep: document.getElementById('keep-btn'),
+  double: document.getElementById('double-btn'),
+  overCoins: document.getElementById('over-coins'),
+  sumCoins: document.getElementById('sum-coins'),
+};
+// KEEP RIDING: once per run, carry on from the crash spot with score + combo.
+function keepRiding() {
+  game.continued = true;
+  game.lives = 1;
+  Object.assign(bike, { crashed: false, spin: 0, airT: 0, h: 0, invuln: CONFIG.continueInvuln });
+  game.obstacles = game.obstacles.filter((o) => o.type === 'streetcar' || Math.abs(o.z - game.dist) > CONFIG.respawnClear);
+  pointers.clear();
+  input.steerTarget = bike.x;
+  game.state = 'playing';
+  hideOverlay();
+  if (tilt.enabled) calibrateTilt();
+  if (audio.settings.music !== 'off') startMusic();
+  sfx.dayStart();
+}
+adUI.keep.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (game.state !== 'over' || game.continued || !overUnlocked()) return;
+  sfx.click();
+  Monetization.showRewardedAd('keep_riding', () => { if (game.state === 'over' && !game.continued) keepRiding(); }, () => {});
+});
+// DOUBLE COINS: double what was earned today.
+adUI.double.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (game.state !== 'summary' || game.stats.coinsDoubled) return;
+  sfx.click();
+  Monetization.showRewardedAd('double_coins', () => {
+    const s = game.stats;
+    if (s.coinsDoubled) return;
+    s.coinsDoubled = true;
+    giveCoins(s.coins);
+    game.runCoins += s.coins;
+    adUI.sumCoins.textContent = `+${s.coins * 2} (x2!)`;
+    adUI.double.classList.add('hidden');
+    sfx.mailbox(0);
+  }, () => {});
+});
+// Ads pause the music; the game never shows an ad itself.
+Monetization.configure({
+  testMode: CONFIG.MONETIZATION_TEST_MODE,
+  interstitialEvery: CONFIG.interstitialEvery,
+  interstitialFreeRuns: CONFIG.interstitialFreeRuns,
+  rewardedSeconds: CONFIG.rewardedAdSeconds,
+  onAdOpen: () => { pauseMusic(); updatePedalSound(false); },
+  onAdClose: () => { if (music.on && game.state !== 'paused') startMusic(); },
+});
+
+
+// ---------------------------------------------------------------------
 // 9c. RIDERS, CUTSCENES, MEDALS
 // Riders are cosmetic only: a palette + hairstyle applied to the bike sprite
 // and to a front-view figure used for portraits and cutscenes. Cutscenes are
@@ -4309,14 +4837,17 @@ const TOP_HAIR = {
   ponytail: [[7, 5, 'hh'], [8, 5, 'h'], [9, 4, 'H'], [10, 4, 'h']],
   ponytailB: [[7, 5, 'hh'], [8, 6, 'h'], [9, 7, 'H'], [10, 7, 'h']],
 };
-function riderTopSprite(r, frame) {
+function riderTopSprite(r0, frame) {
+  const r = look(r0), bk = equippedBike();
   const rows = SPRITE_ART[frame ? 'riderB' : 'riderA'].map((row) => row.split(''));
+  for (let y = RIDER_TOP.length; y <= RIDER_TOP.length + 3; y++) rows[y] = rows[y].map((ch) => (ch === 'w' ? 'f' : ch));   // frame + rear fender in the bike color
   for (const [y, x, str] of TOP_HAIR[r.style === 'ponytail' && frame ? 'ponytailB' : r.style]) {
     for (let i = 0; i < str.length; i++) if (str[i] !== ' ') rows[y][x + i] = str[i];
   }
   return spriteFromArt(rows.map((row) => row.join('')), {
     ...PAL, s: r.skin, c: r.helmet, o: r.shirt, O: shade(r.shirt, 0.78), n: r.pants,
     h: r.hair, H: hairShade(r.hair), j: r.hair, J: shade(r.hair, 0.75),
+    f: bk.frame, g: bk.bar, w: bk.tire,
   });
 }
 
@@ -4415,7 +4946,7 @@ function makePerson(o) {
   personCache.set(key, c);
   return c;
 }
-function riderPerson(r, extra) { return makePerson({ skin: r.skin, hair: r.hair, style: r.style, helmet: r.helmet, shirt: r.shirt, pants: r.pants, ...extra }); }
+function riderPerson(r0, extra) { const r = look(r0); return makePerson({ skin: r.skin, hair: r.hair, style: r.style, helmet: r.helmet, shirt: r.shirt, pants: r.pants, ...extra }); }
 
 // Head-and-shoulders portrait for the select screen (its own canvas).
 function makePortrait(r, bg) {
@@ -4700,8 +5231,9 @@ function sceneOffice(t, st, AW, SH) {
   }
   for (const k of bag.flying) {   // rolled papers in quick arcs, spinning
     const x = lerp(handX, bagX, k), y = lerp(handY, bagY, k) - Math.sin(k * Math.PI) * 26;
-    if (Math.floor(k * 6) % 2) { cr(x - 1, y - 1, 6, 10, PAL.k); cr(x, y, 4, 8, PAL.e); cr(x, y + 3, 4, 2, PAL.r); }
-    else { cr(x - 3, y + 1, 10, 6, PAL.k); cr(x - 2, y + 2, 8, 4, PAL.e); cr(x + 1, y + 2, 2, 4, PAL.r); }
+    const ps = paperSprite();   // the equipped paper style
+    if (equippedPaper() === 'glow') cimg(SPR.paperHalo, x - 13, y - 9 + 2, 2);
+    cimg(ps, x - ps.width, y - ps.height + 3, 2);
   }
   if (bag.fill > 0 && bag.flying.length < SATCHEL.papers && cs.step === cs.script.steps.findIndex((x) => x.papers)) {   // little puff on each landing
     const since = cs.stepT - SATCHEL.first - (bag.fill - 1) * SATCHEL.gap - SATCHEL.paperFlight;
@@ -4768,8 +5300,15 @@ function sceneParade(t, st, AW, SH) {
     const y = SH - ((cs.t * 22 + hash(i, 8) * SH) % (SH + 20)), x = 60 + hash(i, 9) * (AW - 120) + Math.sin(cs.t + i) * 3;
     cr(x, y, 5, 6, CONFETTI[i]); cr(x + 2, y + 6, 1, 6, '#e8e8e8');
   }
-  const pedal = Math.floor(cs.t * 5) % 2;
-  cimg(pedal ? SPR.riderB : SPR.riderA, AW / 2 - 12, SH * 0.55 + Math.sin(cs.t * 2) * 2, 2);
+  const pedal = Math.floor(cs.t * 5) % 2, ry = SH * 0.55 + Math.sin(cs.t * 2) * 2;
+  const tr = equippedTrail();
+  if (tr.colors) for (let i = 0; i < 22; i++) {   // the equipped trail streaming behind
+    const age = ((cs.t * 3 + i * 0.37) % 1), px = AW / 2 + Math.sin(i * 2.1 + cs.t * 4) * (3 + age * 8);
+    pix.globalAlpha = 1 - age;
+    cr(px, ry + 44 + age * 40, tr.id === 'trail:smoke' ? 2 + age * 3 : 1, tr.id === 'trail:smoke' ? 2 + age * 3 : 1, tr.colors[i % tr.colors.length]);
+  }
+  pix.globalAlpha = 1;
+  cimg(pedal ? SPR.riderB : SPR.riderA, AW / 2 - 12, ry, 2);
   confetti(t, AW, SH, 60);
 }
 

@@ -252,3 +252,50 @@ h2 { font-size: 20px; font-weight: 400; text-transform: uppercase; color: var(--
 .settings-box { padding: 4px 6px 10px; background: #1a1c2c; }
 .settings-box.hidden, #pause-main.hidden, #pause-confirm.hidden { display: none; }
 #pause-confirm .reason { margin: 16px 0 6px; font-size: 10px; }
+
+/* ---------- Coins, shop, daily spin ---------- */
+.coin-ico { display: inline-block; width: 10px; height: 10px; margin: 0 4px -1px 0; border: 2px solid #7a5a12; border-radius: 50%; background: #ffd23f; box-shadow: inset 2px 0 0 #fff2a8; vertical-align: baseline; }
+.coins-line { margin-top: 10px; font-size: 10px; color: var(--gold); }
+.summary .coins, .summary .coins b { color: var(--gold); }
+.ad-btn small { display: block; margin-top: 4px; font-size: 7px; opacity: 0.75; }
+#keep-btn { margin-top: 14px; background: #2ec4b6; }
+#double-btn { margin-top: 10px; background: #2ec4b6; }
+.ad-btn.hidden { display: none; }
+.link-btn { margin-top: 10px; padding: 4px 8px; border: 0; background: none; color: #b8c0cc; font: 7px/1.4 "Press Start 2P", monospace; text-decoration: underline; cursor: pointer; }
+.title-btns { flex-wrap: wrap; }
+#spin-btn.done { color: #6b7280; }
+.wallet { margin-top: 8px; font-size: 14px; color: var(--gold); }
+.wallet b { font-weight: 400; }
+.shop-tabs { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; margin-top: 12px; }
+.shop-tabs button { padding: 7px 6px; border: 3px solid #1a1c2c; background: #1a1c2c; color: #b8c0cc; font: 7px/1.2 "Press Start 2P", monospace; cursor: pointer; touch-action: manipulation; }
+.shop-tabs button.sel { border-color: var(--gold); color: var(--gold); }
+.shop-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 8px; }
+.shop-item { position: relative; display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 8px 4px; background: #1a1c2c; border: 3px solid #1a1c2c; }
+.shop-item.rare { border-color: #9b5de5; }
+.shop-item i { position: absolute; top: 4px; right: 4px; font-style: normal; font-size: 6px; color: #c9a6ff; }
+.shop-item canvas { height: 48px; width: auto; }
+.shop-item canvas.outfit { height: 56px; }
+.shop-item canvas.coinpack { height: 30px; margin: 9px 0; }
+.shop-name { font-size: 7px; line-height: 1.4; }
+.shop-item .aud-btn { width: 100%; padding: 7px 2px; font-size: 7px; }
+.shop-item .aud-btn .coin-ico { width: 7px; height: 7px; border-width: 1px; margin-right: 3px; }
+.shop-item .aud-btn.buy { background: #3a4150; color: var(--gold); }
+.shop-item .aud-btn.poor { color: #8a93a3; }
+.shop-item .aud-btn.equipped { background: var(--gold); color: #1b1b1b; }
+#shop-debug { margin-top: 8px; color: #ff5a5f; }
+#shop-debug.hidden { display: none; }
+#spin-wheel { display: block; width: 220px; height: 220px; margin: 14px auto 0; }
+
+/* ---------- Placeholder ad / store overlay (monetization.js) ---------- */
+.mz-overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(5, 8, 14, 0.92); font-family: "Press Start 2P", ui-monospace, monospace; }
+.mz-box { width: 100%; max-width: 320px; padding: 22px 18px; border: 4px dashed #ff5a5f; background: #11151f; color: #fff; text-align: center; }
+.mz-tag { font-size: 7px; color: #ff5a5f; }
+.mz-box h3 { margin-top: 14px; font-size: 16px; font-weight: 400; color: #ffd23f; }
+.mz-sub { margin-top: 8px; font-size: 8px; line-height: 1.7; opacity: 0.75; }
+.mz-place { margin-top: 12px; font-size: 9px; color: #2ec4b6; }
+.mz-count { margin-top: 14px; font-size: 28px; }
+.mz-row { display: flex; gap: 8px; margin-top: 16px; }
+.mz-btn { flex: 1; width: 100%; margin-top: 16px; padding: 12px 8px; border: 3px solid #1a1c2c; background: #ffd23f; color: #1b1b1b; font: 10px/1.2 "Press Start 2P", monospace; cursor: pointer; }
+.mz-row .mz-btn { margin-top: 0; }
+.mz-btn.mz-alt { background: #3a4150; color: #fff; }
+.mz-btn:disabled { opacity: 0.5; cursor: default; }
