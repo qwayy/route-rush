@@ -299,3 +299,27 @@ h2 { font-size: 20px; font-weight: 400; text-transform: uppercase; color: var(--
 .mz-row .mz-btn { margin-top: 0; }
 .mz-btn.mz-alt { background: #3a4150; color: #fff; }
 .mz-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* ---------- Garage ---------- */
+.garage-preview { display: flex; justify-content: center; align-items: flex-end; gap: 22px; height: 76px; margin-top: 12px; }
+.garage-preview .side { width: 88px; height: 56px; }
+.garage-preview .top { width: 36px; height: 63px; }
+.garage-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; text-align: left; }
+.garage-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; background: #1a1c2c; border: 3px solid #1a1c2c; }
+.garage-item.sel { border-color: var(--gold); }
+.garage-item canvas { flex: 0 0 auto; width: 44px; height: 28px; }
+.garage-item.locked canvas { opacity: 0.6; }
+.garage-info { flex: 1; min-width: 0; }
+.garage-info b { display: block; font-size: 8px; font-weight: 400; color: var(--gold); }
+.garage-info span { display: block; margin-top: 4px; font-size: 6px; line-height: 1.6; opacity: 0.85; }
+.garage-info em { display: block; margin-top: 4px; font-style: normal; font-size: 6px; color: #b8c0cc; }
+.garage-info .bar { height: 5px; margin-top: 4px; background: #3a4150; }
+.garage-info .bar i { display: block; height: 100%; background: #2ec4b6; }
+.garage-info small { display: block; margin-top: 3px; font-size: 6px; opacity: 0.7; }
+.garage-item .aud-btn { flex: 0 0 auto; padding: 7px 6px; font-size: 7px; }
+.garage-item .aud-btn.equipped { background: var(--gold); color: #1b1b1b; }
+.garage-paint-label { margin-top: 12px; }
+.garage-paints { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 6px; }
+.paint-chip { width: 26px; height: 26px; border: 3px solid #1a1c2c; cursor: pointer; touch-action: manipulation; }
+.paint-chip.sel { outline: 3px solid var(--gold); }
+.unlock-pop canvas.bikepop { width: 44px; height: 28px; }

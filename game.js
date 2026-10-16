@@ -227,6 +227,34 @@ const CONFIG = {
   interstitialFreeRuns: 3,   // never during the player's first runs
   continueInvuln: 2,         // KEEP RIDING: seconds of blinking after resuming
 
+  // Player visibility
+  playerScale: 1.5,          // bike + rider drawn this much bigger (hitbox scales with it)
+  playerHighlight: 0.22,     // strength of the light pool under the bike
+
+  // Bike models (perks). Unlocked by challenges only, never sold.
+  bmxHopTime: 0.42,          // BMX: little hop over potholes / cones...
+  bmxHopHeight: 16,
+  bmxHopLead: 0.12,          // ...starting this many seconds before reaching them
+  cruiserSteer: 0.75,        // Cruiser: bike follows the steering a little more gently
+  cruiserLean: 0.5,          //   and leans / wobbles half as much
+  cruiserTiltSmooth: 0.55,   //   with extra filtering of tilt jitter
+  roadBikePoints: 1.15,      // Road Bike: +15% points
+  roadBikeSpeed: 1.06,       //   and a slightly faster top speed
+  eBikeBoost: 1.25,          // E-Bike: speed boost...
+  eBikeStartTime: 3,         //   ...and invincibility for this long at the start of each day
+  fatTireRange: 36,          // Fat Tire: can ride this far past the curb onto sidewalk / lawn
+  unlockPerfectDays: 5,      // Cruiser unlock
+  unlockMailboxes: 50,       // Fat Tire unlock
+
+  // Road power-ups
+  powerEvery: [20, 30],      // seconds between power-ups on the route
+  powerWeights: { shield: 1, magnet: 1, double: 1, slowmo: 1, storm: 1 },
+  powerTime: { magnet: 8, double: 10, slowmo: 5, storm: 6 },
+  powerPickupR: 18,          // pickup reach around the bike
+  slowmoScale: 0.6,          // Slow-Mo: the world runs at this speed
+  magnetRange: 170,          // Magnet: pulls toward a subscriber mailbox this far up/down the street
+  magnetMaxVz: 420,
+
   // Rider skills: each rider has one passive skill (see RIDERS).
   sureShotMailbox: 1.4,      // Sure Shot: mailbox hit area x this
   quickArmCooldown: 0.6,     // Quick Arm: throw cooldown x this
@@ -247,6 +275,8 @@ const CONFIG = {
   musicFile: 'music/shit-talking.mp3',
 };
 
+// Player hitbox matches the drawn size.
+const PLAYER = { hw: CONFIG.bikeHalfW * CONFIG.playerScale, hl: CONFIG.bikeHalfL * CONFIG.playerScale };
 const BEST_KEY = 'routeRush.best';
 const TILT_KEY = 'routeRush.tiltSensitivity';
 const DAY_NAMES = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
@@ -557,6 +587,7 @@ function resetGame() {
     score: 0, lives: CONFIG.lives, day: 0, week: 1, totalDelivered: 0,
     street: buildStreet(),
     overTitle: '', overReason: '', overShownAt: 0, runCoins: 0, continued: false, coinBump: 0,
+    powerClock: 0, nextPowerAt: rand(CONFIG.powerEvery[0], CONFIG.powerEvery[1]),   // route time, carried across days
   });
   setupDay();
 }
@@ -586,7 +617,9 @@ function setupDay() {
       perfect: false, lucky: false, bonusClean: false, added: 0, coins: 0, coinsDoubled: false,
     },
   });
-  Object.assign(bike, { x: 200, vx: 0, spin: 0, crashed: false, airT: 0, h: 0, invuln: 0, wobble: 0 });
+  Object.assign(bike, { x: 200, vx: 0, spin: 0, crashed: false, airT: 0, h: 0, invuln: 0, wobble: 0, airMax: 0, airH: 0 });
+  Object.assign(game, { powerups: [], power: null, shield: false, eBoost: 0 });
+  if (hasModel('ebike')) { bike.invuln = CONFIG.eBikeStartTime; game.eBoost = CONFIG.eBikeStartTime; }
   input.steerTarget = 200;
   pointers.clear();
   layoutDay();
@@ -603,14 +636,22 @@ function speedFor(day, housesPassed) {
 }
 // Very first Monday only: a few obstacle-free seconds + the controls hint.
 function isFirstDay() { return game.day === 0 && game.week === 1; }
-function targetSpeed() { return speedFor(game.day, game.housesPassedToday); }
+function targetSpeed() {
+  return speedFor(game.day, game.housesPassedToday) * (hasModel('road') ? CONFIG.roadBikeSpeed : 1) * (game.eBoost > 0 ? CONFIG.eBikeBoost : 1);
+}
+// Where the bike can steer: the road, or (Fat Tire) up onto the sidewalk and lawn edge.
+function bikeRange() {
+  const extra = hasModel('fat') ? CONFIG.fatTireRange : 0;
+  return [L.bikeMinX - extra, L.bikeMaxX + extra];
+}
 
 function pushBanner(title, sub, color, time, place) {
   game.banners.push({ title, sub, color, place, t: time, max: time });
 }
 
 function crash(o) {
-  if (riderHas('secondWind') && game.secondWind > 0) { secondWind(); return; }
+  if (game.shield) { game.shield = false; crashSave('SHIELD!'); return; }
+  if (riderHas('secondWind') && game.secondWind > 0) { game.secondWind--; crashSave('SECOND WIND!'); return; }
   bike.crashed = true; bike.airT = 0; bike.h = 0;
   game.state = 'crashed';
   game.crashTimer = CONFIG.crashDelay;
@@ -637,14 +678,13 @@ function crash(o) {
 }
 
 // Second Wind: the hit is shrugged off once per day. Wobble, blink, keep riding.
-function secondWind() {
-  game.secondWind--;
+function crashSave(label) {
   bike.invuln = CONFIG.secondWindInvuln;
   bike.wobble = CONFIG.secondWindWobble;
   game.shake = Math.max(game.shake, 7);
   game.flash = 0.3; game.flashColor = COLORS.perfect;
   burst(bike.x, game.dist, COLORS.glass, 12, 140);
-  popText('SECOND WIND!', bike.x, game.dist + 40, COLORS.perfect, 24);
+  popText(label, bike.x, game.dist + 40, COLORS.perfect, 24);
   sfx.clatter();
   sfx.boing();
 }
@@ -782,7 +822,7 @@ canvas.addEventListener('pointermove', (e) => {
   }
   if (p.dragging) {
     const d = (e.clientX - p.lastX) / view.scale;
-    input.steerTarget = clamp(input.steerTarget + d * CONFIG.dragSensitivity * (riderHas('smoothRider') ? CONFIG.smoothSensitivity : 1), L.bikeMinX, L.bikeMaxX);
+    input.steerTarget = clamp(input.steerTarget + d * CONFIG.dragSensitivity * (riderHas('smoothRider') ? CONFIG.smoothSensitivity : 1), ...bikeRange());
     p.lastX = e.clientX;
   }
 });
@@ -1377,8 +1417,14 @@ function update(dt) {
   }
   if (game.state !== 'playing') return;
 
+  // Slow-Mo: the world runs slower; steering, throwing and timers stay real-time.
+  const realDt = dt;
+  if (powerOn('slowmo')) dt *= CONFIG.slowmoScale;
+  if (game.power && (game.power.t -= realDt) <= 0) game.power = null;
+  game.eBoost = Math.max(0, (game.eBoost || 0) - realDt);
+
   game.time += dt;
-  game.throwCooldown = Math.max(0, game.throwCooldown - dt);
+  game.throwCooldown = Math.max(0, game.throwCooldown - realDt);
   if (game.throwCooldown <= 0 && game.queuedThrow) throwPaper(game.queuedThrow);   // tap made during the cooldown
   bike.invuln = Math.max(0, bike.invuln - dt);
   bike.wobble = Math.max(0, bike.wobble - dt);
@@ -1396,15 +1442,17 @@ function update(dt) {
   if (stroke !== game.pedalPhase) { game.pedalPhase = stroke; if (bike.airT <= 0) sfx.pedalTick(game.speed); }
 
   // Steering
-  if (tilt.enabled) tilt.smooth = damp(tilt.smooth, tilt.raw, CONFIG.tiltSmoothing, dt);
+  const cruiser = hasModel('cruiser');
+  if (tilt.enabled) tilt.smooth = damp(tilt.smooth, tilt.raw, CONFIG.tiltSmoothing * (cruiser ? CONFIG.cruiserTiltSmooth : 1), realDt);
   const sens = riderHas('smoothRider') ? CONFIG.smoothSensitivity : 1;
-  if (tiltActive()) input.steerTarget += tiltSteer() * sens * dt;
-  if (input.left) input.steerTarget -= CONFIG.keySteerSpeed * sens * dt;
-  if (input.right) input.steerTarget += CONFIG.keySteerSpeed * sens * dt;
-  input.steerTarget = clamp(input.steerTarget, L.bikeMinX, L.bikeMaxX);
+  if (tiltActive()) input.steerTarget += tiltSteer() * sens * realDt;
+  if (input.left) input.steerTarget -= CONFIG.keySteerSpeed * sens * realDt;
+  if (input.right) input.steerTarget += CONFIG.keySteerSpeed * sens * realDt;
+  const [minX, maxX] = bikeRange();
+  input.steerTarget = clamp(input.steerTarget, minX, maxX);
   const prevX = bike.x;
-  bike.x = damp(bike.x, input.steerTarget, CONFIG.steerSmoothing * (riderHas('smoothRider') ? CONFIG.smoothSteer : 1), dt);
-  bike.vx = (bike.x - prevX) / dt;
+  bike.x = damp(bike.x, input.steerTarget, CONFIG.steerSmoothing * (riderHas('smoothRider') ? CONFIG.smoothSteer : 1) * (cruiser ? CONFIG.cruiserSteer : 1), realDt);
+  bike.vx = (bike.x - prevX) / realDt;
   spawnTrail(dt);
 
   // Ramps + jumping (airborne = immune to obstacles)
@@ -1415,13 +1463,14 @@ function update(dt) {
       burst(bike.x, game.dist, COLORS.sidewalk, 8, 70);
       sfx.land();
     } else {
-      bike.h = Math.sin(Math.PI * (1 - bike.airT / CONFIG.jumpTime)) * CONFIG.jumpHeight;
+      bike.h = Math.sin(Math.PI * (1 - bike.airT / (bike.airMax || CONFIG.jumpTime))) * (bike.airH || CONFIG.jumpHeight);
     }
   }
   for (const r of game.ramps) {
     if (!r.used && bike.airT <= 0 && overlapsBike(r, 0.8)) {
       r.used = true;
-      bike.airT = CONFIG.jumpTime;
+      bike.airT = bike.airMax = CONFIG.jumpTime;
+      bike.airH = CONFIG.jumpHeight;
       popText('AIR!', bike.x, game.dist + 60, COLORS.perfect, 22);
       sfx.boing();
     }
@@ -1432,8 +1481,16 @@ function update(dt) {
   game.flying = game.flying.filter((p) => !p.done);
 
   // Obstacles
+  spawnPowerups(dt);
+  collectPowerups();
+
   for (const o of game.obstacles) {
     if (o.sit) continue;   // a sitting dog stays put on the sidewalk
+    if ((o.type === 'pothole' || o.type === 'cone') && hasModel('bmx') && bike.airT <= 0 && bmxShouldHop(o)) {   // BMX: hop it
+      bike.airT = bike.airMax = CONFIG.bmxHopTime;
+      bike.airH = CONFIG.bmxHopHeight;
+      sfx.boing();
+    }
     if (o.type === 'dog' || o.type === 'fan') {
       if (!o.active && (o.z - game.dist) / game.speed < o.lead) { o.active = true; if (o.type === 'dog') sfx.bark(); }
       if (o.active) { o.x += o.dir * o.speed * dt; o.anim += dt * 16; }
@@ -1640,9 +1697,14 @@ function debugChecks() {
   }
 }
 
+function bmxShouldHop(o) {
+  const gap = (o.z - o.h / 2) - (game.dist + PLAYER.hl);   // road between the front wheel and it
+  return Math.abs(o.x - bike.x) < (o.w / 2 + PLAYER.hw) * CONFIG.hitForgiveness && gap < game.speed * CONFIG.bmxHopLead && gap > -o.h;
+}
+
 function overlapsBike(o, forgiveness) {
-  return Math.abs(o.x - bike.x) < (o.w / 2 + CONFIG.bikeHalfW) * forgiveness &&
-         Math.abs(o.z - game.dist) < (o.h / 2 + CONFIG.bikeHalfL) * forgiveness;
+  return Math.abs(o.x - bike.x) < (o.w / 2 + PLAYER.hw) * forgiveness &&
+         Math.abs(o.z - game.dist) < (o.h / 2 + PLAYER.hl) * forgiveness;
 }
 
 // --- Throwing ---
@@ -1661,18 +1723,21 @@ function throwPaper(side) {
   game.throwCooldown = CONFIG.throwCooldown * (riderHas('quickArm') ? CONFIG.quickArmCooldown : 1);
   game.queuedThrow = 0;
   sfx.throw();
-  const x = bike.x + side * 8;
-  const p = {
-    side, lx: side < 0 ? x : view.W - x, z: game.dist, vz: game.speed * CONFIG.paperCarry,
-    h: CONFIG.throwHeight + bike.h, rot: 0, spin: side * rand(14, 20), done: false, trail: [],
-  };
-  p.trail.push([p.lx, p.z]);
-  game.flying.push(p);
+  for (const sd of powerOn('storm') ? [side, -side] : [side]) {   // Paper Storm: both sides at once
+    const x = bike.x + sd * 8;
+    const p = {
+      side: sd, lx: sd < 0 ? x : view.W - x, z: game.dist, vz: game.speed * CONFIG.paperCarry,
+      h: CONFIG.throwHeight + bike.h, rot: 0, spin: sd * rand(14, 20), done: false, trail: [],
+    };
+    p.trail.push([p.lx, p.z]);
+    game.flying.push(p);
+  }
 }
 
 // Moves the paper in sub-steps of at most CONFIG.paperStep units and sweeps
 // each step against every hitbox, so nothing is skipped at low frame rates.
 function updatePaper(p, dt) {
+  if (powerOn('magnet')) magnetPull(p);
   p.rot += p.spin * dt;
   if (p.h > CONFIG.throwHeight) p.h = Math.max(CONFIG.throwHeight, p.h - 80 * dt);   // thrown mid-jump
   const dx = CONFIG.throwSpeed * (riderHas('quickArm') ? CONFIG.quickArmPaperSpeed : 1) * dt, dz = p.vz * dt;
@@ -1852,7 +1917,12 @@ function deliverTo(h, kind, x, z) {
   if (king && game.combo % CONFIG.comboKingStep === 0) game.comboShield = CONFIG.comboKingForgive;
   if (comboMult() > mult) popText(`COMBO x${comboMult().toFixed(1)}`, x, z + 34, COLORS.perfect, 16);
   burst(x, z, d.color, CONFIG.particleCount + (kind === 'mailbox' ? 6 : 0), kind === 'mailbox' ? 150 : 110);
-  if (kind === 'mailbox') { game.stats.mailbox++; game.shake = Math.max(game.shake, CONFIG.shakeMailbox); }
+  if (kind === 'mailbox') {
+    game.stats.mailbox++;
+    progress.mailboxes = (progress.mailboxes || 0) + 1;
+    saveProgress();
+    game.shake = Math.max(game.shake, CONFIG.shakeMailbox);
+  }
   return true;
 }
 
@@ -1916,6 +1986,8 @@ function dropPaper(p, lx) { game.groundPapers.push({ x: sideX(p.side, lx), z: p.
 function bonusPts(n) { return riderHas('hustler') ? Math.round(n * CONFIG.hustlerBonus) : n; }   // Hustler
 
 function addPoints(n) {
+  const mult = (hasModel('road') ? CONFIG.roadBikePoints : 1) * (powerOn('double') ? 2 : 1);
+  if (mult !== 1) n = Math.round(Math.round(n * mult) / 10) * 10;
   game.score += n;
   if (game.phase === 'route') game.stats.routePoints += n;
   else game.stats.bonusPoints += n;
@@ -2294,7 +2366,6 @@ SPR.ring = spriteFromFn(9, 9, (px) => {
 });
 SPR.shadowS = makeShadow(6, 2);
 SPR.shadowM = makeShadow(14, 4);
-SPR.shadowBike = makeShadow(10, 16);
 SPR.shadowTree = makeShadow(24, 7);
 
 // --- Buffer helpers (all positions in logical units) ---
@@ -2434,7 +2505,8 @@ function render(now) {
   for (const o of game.obstacles) if (o.type !== 'pothole') items.push([o.z - o.h / 2, drawObstacle, o]);
   for (const r of game.ramps) items.push([r.z - r.h / 2, drawRamp, r]);
   for (const tr of game.tracks) items.push([tr.z - 12, drawCrossing, tr]);
-  items.push([game.dist - CONFIG.bikeHalfL, drawBike, null]);
+  items.push([game.dist - PLAYER.hl, drawBike, null]);
+  for (const pu of game.powerups) items.push([pu.z, drawPowerup, pu]);
   items.sort((a, c) => c[0] - a[0]);
   for (const [, fn, o] of items) fn(o, t);
 
@@ -2466,6 +2538,7 @@ function render(now) {
   // --- Crisp overlays ---
   ctx.save();
   ctx.beginPath(); ctx.rect(0, 0, view.W, view.H); ctx.clip();
+  if (powerOn('slowmo')) { ctx.fillStyle = 'rgba(127,208,196,0.09)'; ctx.fillRect(0, 0, view.W, view.H); }
   drawPops();
   drawFlash();
   if (game.state !== 'title' && game.state !== 'menu') drawHUD();
@@ -3407,13 +3480,16 @@ function drawCrossCar(o) {
 }
 
 function drawBike(_, t) {
-  if (bike.invuln > 0 && Math.floor(t * 12) % 2) return;   // blink after respawn
-  drawSpriteC(SPR.shadowBike, bike.x + 4, view.bikeY + 4);
+  if (bike.invuln > 0 && Math.floor(t * 12) % 2) return;   // blink while invincible
+  const lift = bike.h * CONFIG.heightY;
+  drawSpriteC(SPR.playerGlow, bike.x, view.bikeY - 6);           // light pool: easy to track at speed
+  drawSpriteC(SPR.playerShadow, bike.x + 3, view.bikeY + 4 + Math.min(lift * 0.15, 4));
   const pedal = !bike.crashed && bike.airT <= 0 && Math.floor(game.dist / 22) % 2 === 1;
-  const wob = bike.wobble > 0 ? Math.sin(t * 38) * 0.35 * bike.wobble / CONFIG.secondWindWobble : 0;   // Second Wind save
-  const lean = Math.round((clamp(bike.vx * CONFIG.leanPerSpeed, -CONFIG.maxLean, CONFIG.maxLean) + wob) / 0.1) * 0.1;
-  drawSprite(pedal ? SPR.riderB : SPR.riderA, bike.x, view.bikeY + CONFIG.bikeHalfL - bike.h * CONFIG.heightY,
-    bike.crashed ? bike.spin : lean);
+  const steady = hasModel('cruiser') ? CONFIG.cruiserLean : 1;
+  const wob = bike.wobble > 0 ? Math.sin(t * 38) * 0.35 * bike.wobble / CONFIG.secondWindWobble : 0;   // crash save
+  const lean = Math.round(((clamp(bike.vx * CONFIG.leanPerSpeed, -CONFIG.maxLean, CONFIG.maxLean) + wob) * steady) / 0.1) * 0.1;
+  drawSprite(pedal ? SPR.riderBigB : SPR.riderBigA, bike.x, view.bikeY + PLAYER.hl - lift, bike.crashed ? bike.spin : lean);
+  drawPowerFx(t, bike.x, view.bikeY - lift);
 }
 
 // Papers fly flat and straight sideways; the shadow shows where they are.
@@ -3545,6 +3621,7 @@ function drawHUD() {
     textShadowed('BONUS', view.W / 2, top + 30, COLORS.good);
   }
   if (comboMult() > 1) textShadowed(`COMBO x${comboMult().toFixed(1)}`, 12, top + 66, COLORS.perfect);
+  drawPowerHUD(top);
   drawSkillHUD(top);
 
   if (debug.hitAreas) {   // label + color key
@@ -4099,6 +4176,14 @@ const sfx = {
     if (!sfxOn() || !claim('type', 2, 0.05)) return;
     tone({ type: 'square', f: jit(880), dur: 0.018, vol: 0.025 });
   },
+  power(type) {        // a different pickup sound for each power-up
+    if (!sfxOn() || !claim('power', 1, 0.3)) return;
+    if (type === 'shield') { notes([60, 64, 67, [72, 3]], 0.06, 'triangle', 0.22); tone({ type: 'sine', f: 1200, f2: 1800, dur: 0.25, vol: 0.06 }); }
+    else if (type === 'magnet') { tone({ type: 'square', f: 220, f2: 880, dur: 0.22, vol: 0.08 }); tone({ type: 'square', f: 230, f2: 900, dur: 0.22, vol: 0.05, at: 0.05 }); }
+    else if (type === 'double') notes([[84, 1], 0, [84, 1], [91, 3]], 0.06, 'square', 0.1);
+    else if (type === 'slowmo') { tone({ type: 'sine', f: 900, f2: 220, dur: 0.5, vol: 0.18 }); tone({ type: 'triangle', f: 450, f2: 110, dur: 0.5, vol: 0.1 }); }
+    else { noise({ filter: 'bandpass', f: 600, f2: 4000, q: 1, dur: 0.3, vol: 0.25 }); notes([72, 76, 72, 79], 0.05, 'square', 0.07, 0.1); }
+  },
   click() {
     if (!sfxOn()) return;
     tone({ type: 'square', f: 1800, dur: 0.025, vol: 0.08 });
@@ -4326,9 +4411,9 @@ const BIKES = [
   { id: 'bike:red', name: 'CLASSIC RED', frame: '#d64545', bar: '#e8e8e8', tire: '#2b2b35' },
   { id: 'bike:kcblue', name: 'KC BLUE', frame: '#3a7bd5', bar: '#e8e8e8', tire: '#2b2b35' },
   { id: 'bike:neon', name: 'NEON GREEN', frame: '#7dff4f', bar: '#1a1c2c', tire: '#16201a' },
-  { id: 'bike:mint', name: 'MINT CRUISER', frame: '#7fd0c4', bar: '#f7f4ea', tire: '#f7f4ea' },
+  { id: 'bike:mint', name: 'MINT', frame: '#7fd0c4', bar: '#f7f4ea', tire: '#f7f4ea' },
   { id: 'bike:pink', name: 'HOT PINK', frame: '#f15bb5', bar: '#f7f4ea', tire: '#2b2b35' },
-  { id: 'bike:bmx', name: 'MIDNIGHT BMX', frame: '#1a1c2c', bar: '#ff8c42', tire: '#0e0f16' },
+  { id: 'bike:bmx', name: 'MIDNIGHT', frame: '#1a1c2c', bar: '#ff8c42', tire: '#0e0f16' },
   { id: 'bike:chrome', name: 'CHROME', frame: '#e8edf2', bar: '#ffffff', tire: '#4a4f5a', rare: true },
   { id: 'bike:gold', name: 'SOLID GOLD', frame: '#ffd23f', bar: '#fff2a8', tire: '#7a5a12', rare: true },
 ];
@@ -4407,7 +4492,7 @@ function spawnTrail(dt) {
   while (game.trailAcc >= 1 && game.trailFx.length < 140) {
     game.trailAcc--;
     const kind = tr.id.split(':')[1], col = pick(tr.colors);
-    const p = { kind, color: col, x: bike.x + rand(-4, 4), z: game.dist - CONFIG.bikeHalfL + rand(-2, 4), h: bike.h + rand(1, 6), vx: 0, vz: 0, vh: 0, life: 0.7, max: 0.7 };
+    const p = { kind, color: col, x: bike.x + rand(-4, 4), z: game.dist - PLAYER.hl + rand(-2, 4), h: bike.h + rand(1, 6), vx: 0, vz: 0, vh: 0, life: 0.7, max: 0.7 };
     if (kind === 'smoke') Object.assign(p, { h: bike.h + 2, vh: 10, life: 0.8, max: 0.8 });
     if (kind === 'leaves') Object.assign(p, { vx: rand(-25, 25), vh: rand(10, 30), life: 0.9, max: 0.9 });
     if (kind === 'confetti') Object.assign(p, { vx: rand(-45, 45), vh: rand(30, 70), life: 0.8, max: 0.8 });
@@ -4447,17 +4532,6 @@ function drawTrailFx(t) {
 }
 
 // --- Previews ---
-function makeBikeIcon(b) {   // side view
-  const T = b.tire, F = b.frame, B = b.bar;
-  return spriteFromFn(22, 14, (px) => {
-    const wheel = (cx) => { for (let y = 0; y < 14; y++) for (let x = 0; x < 22; x++) { const d = Math.hypot(x + 0.5 - cx, y + 0.5 - 9.5); if (d <= 4.2 && d > 2.9) px(x, y, T); else if (d <= 0.8) px(x, y, '#9aa0a8'); } };
-    wheel(5); wheel(17);
-    for (let i = 0; i <= 6; i++) { px(5 + i, 9 - Math.round(i * 0.7), F); px(11 + i, 5 + Math.round(i * 0.55), F); px(8 + Math.round(i * 0.6), 5, F); }
-    px(11, 9, F); px(10, 9, F); px(12, 8, F);
-    for (let i = 0; i < 4; i++) px(7 + i, 3, PAL.k);   // seat
-    px(16, 3, B); px(17, 2, B); px(18, 2, B); px(16, 4, F);   // handlebar
-  });
-}
 function makeTrailIcon(tr) {
   const c = makeCanvas(22, 14), g = c.getContext('2d');
   if (!tr.colors) { g.fillStyle = '#4a4f5a'; g.fillRect(4, 6, 14, 2); return c; }
@@ -4513,7 +4587,7 @@ function equip(it) {
 function previewFor(it) {
   const [kind] = it.id.split(':');
   if (kind === 'outfit') return cloneCanvas(riderPerson(curRider(), { shirt: it.shirt, pants: it.pants, helmet: it.helmet, bag: true }));
-  if (kind === 'bike') return makeBikeIcon(it);
+  if (kind === 'bike') return makeBikeIcon(it, bikeModel());
   if (kind === 'paper') return makePaperIcon(it.id);
   return makeTrailIcon(it);
 }
@@ -4522,7 +4596,7 @@ function renderShop() {
   shopUI.tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('sel', b.dataset.tab === shopTab));
   shopUI.debugBtn.classList.toggle('hidden', !debug.hitAreas);
   shopUI.grid.innerHTML = '';
-  shopUI.note.textContent = shopTab === 'outfits' ? `Outfits for ${curRider().name}. Cosmetic only.` : shopTab === 'coins' ? 'Real-money purchases (placeholder store).' : 'Cosmetic only. Same speed and controls.';
+  shopUI.note.textContent = shopTab === 'outfits' ? `Outfits for ${curRider().name}. Cosmetic only.` : shopTab === 'coins' ? 'Real-money purchases (placeholder store).' : shopTab === 'bikes' ? 'Paint jobs fit any bike. Bike models (perks) are earned in the Garage.' : 'Cosmetic only. Same speed and controls.';
   if (shopTab === 'coins') { renderStore(); return; }
   for (const it of shopItems(shopTab)) {
     const card = document.createElement('div');
@@ -4758,6 +4832,269 @@ Monetization.configure({
 
 
 // ---------------------------------------------------------------------
+// 9e. GARAGE (bike models with perks) + ROAD POWER-UPS
+// Bike MODELS have perks and are unlocked by challenges only (never sold).
+// PAINT JOBS are cosmetic and sold in the shop; any paint fits any model.
+// ---------------------------------------------------------------------
+const GARAGE_KEY = 'routeRush.garage';
+const weekReached = () => Math.floor(progress.furthest / DAY_NAMES.length) + 1;
+const MODELS = [
+  { id: 'classic', name: 'CLASSIC', perk: 'Balanced. No perk.' },
+  { id: 'bmx', name: 'BMX', perk: 'Hops potholes and cones by itself', goal: 'Finish Week 1', label: 'Weeks finished', prog: () => [Math.min(progress.weeksDone, 1), 1] },
+  { id: 'cruiser', name: 'CRUISER', perk: 'Smoother, steadier steering', goal: `Earn ${CONFIG.unlockPerfectDays} Perfect Days`, label: 'Perfect Days', prog: () => [Math.min(progress.perfectDays || 0, CONFIG.unlockPerfectDays), CONFIG.unlockPerfectDays] },
+  { id: 'road', name: 'ROAD BIKE', perk: `+${Math.round((CONFIG.roadBikePoints - 1) * 100)}% points, a bit faster`, goal: 'Reach Week 3', label: 'Week', prog: () => [Math.min(weekReached(), 3), 3] },
+  { id: 'fat', name: 'FAT TIRE', perk: 'Rides up onto sidewalks and lawns', goal: `Hit ${CONFIG.unlockMailboxes} mailboxes`, label: 'Mailboxes', prog: () => [Math.min(progress.mailboxes || 0, CONFIG.unlockMailboxes), CONFIG.unlockMailboxes] },
+  { id: 'ebike', name: 'E-BIKE', perk: `Speed boost + ${CONFIG.eBikeStartTime}s invincible at each day's start`, goal: 'Finish Week 4', label: 'Weeks finished', prog: () => [Math.min(progress.weeksDone, 4), 4] },
+];
+function modelUnlocked(m) { if (!m.prog) return true; const [a, b] = m.prog(); return a >= b; }
+const garage = (() => {
+  try { const g = JSON.parse(storage.get(GARAGE_KEY, '{}')) || {}; return { model: g.model || 'classic' }; } catch (e) { return { model: 'classic' }; }
+})();
+function saveGarage() { storage.set(GARAGE_KEY, JSON.stringify(garage)); }
+function bikeModel() {   // the model in use (falls back to Classic if it isn't unlocked)
+  const m = MODELS.find((x) => x.id === garage.model);
+  return m && modelUnlocked(m) ? m.id : 'classic';
+}
+const hasModel = (id) => bikeModel() === id;
+// Newly unlocked models pop up like new riders.
+function checkModelUnlocks(silent) {
+  progress.models = progress.models || {};
+  let changed = false;
+  for (const m of MODELS) {
+    if (!m.prog || progress.models[m.id] || !modelUnlocked(m)) continue;
+    progress.models[m.id] = 1;
+    changed = true;
+    if (!silent) unlockQueue.push({ bikeModel: m });
+  }
+  if (changed) saveProgress();
+}
+
+// Side-view icon of a model in a paint job (garage, shop, HUD).
+const bikeIconCache = new Map();
+function makeBikeIcon(b, model = 'classic') {
+  const key = b.id + model;
+  if (bikeIconCache.has(key)) return bikeIconCache.get(key);
+  const T = b.tire, F = b.frame, B = b.bar;
+  const c = spriteFromFn(22, 14, (px) => {
+    const r = model === 'bmx' ? 3.4 : 4.2, inner = model === 'fat' ? 1.6 : model === 'road' ? 3.5 : 2.9, cy = model === 'bmx' ? 10.2 : 9.5;
+    const wheel = (cx) => { for (let y = 0; y < 14; y++) for (let x = 0; x < 22; x++) { const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy); if (d <= r && d > inner) px(x, y, T); else if (d <= 0.8) px(x, y, '#9aa0a8'); } };
+    wheel(model === 'bmx' ? 6 : 5); wheel(model === 'bmx' ? 16 : 17);
+    for (let i = 0; i <= 6; i++) { px(5 + i, 9 - Math.round(i * 0.7), F); px(11 + i, 5 + Math.round(i * 0.55), F); px(8 + Math.round(i * 0.6), 5, F); }
+    px(11, 9, F); px(10, 9, F); px(12, 8, F);
+    for (let i = 0; i < 4; i++) px(7 + i, model === 'cruiser' ? 2 : 3, PAL.k);   // seat
+    if (model === 'cruiser') { px(15, 2, B); px(16, 1, B); px(17, 1, B); px(18, 1, B); px(19, 2, B); px(16, 3, F); px(16, 4, F); }
+    else if (model === 'road') { px(16, 3, B); px(17, 3, B); px(18, 4, B); px(18, 5, B); px(16, 4, F); }
+    else { px(16, 3, B); px(17, 2, B); px(18, 2, B); px(16, 4, F); }
+    if (model === 'ebike') { for (const [x, y] of [[8, 7], [9, 7], [8, 6], [9, 6]]) px(x, y, '#2ec4b6'); px(10, 6, '#ffd23f'); }
+    if (model === 'bmx') { px(4, 10, '#9aa0a8'); px(18, 10, '#9aa0a8'); }
+  });
+  bikeIconCache.set(key, c);
+  return c;
+}
+
+// Power-up sprites (9x9).
+const POWER_PAL = { k: PAL.k, b: '#3a7bd5', B: '#8fbfff', r: '#d64545', g: '#c0c6d0', a: '#ffd23f', Y: '#c9921e', w: '#f7f4ea', c: '#2ec4b6', e: PAL.e };
+const POWER_ART = {
+  shield: ['..kkkkk..', '.kbBBbbk.', 'kbBbbbbbk', 'kbbbbbbbk', 'kbbbbbbbk', 'kkkkkkkkk', '.kk...kk.', '.........', '.........'],
+  magnet: ['.........', 'kkk...kkk', 'krk...krk', 'krk...krk', 'krk...krk', 'krrk.krrk', '.krrrrrk.', '..kkkkk..', 'gg.....gg'],
+  double: ['.........', '.........', '.....aaa.', 'a..a....a', '.aa....a.', '.aa...a..', 'a..a.aaaa', '.........', '.........'],
+  slowmo: ['..kkkkk..', '.kwwwwwk.', 'kwwwkwwwk', 'kwwwkwwwk', 'kwwwkkwwk', 'kwwwwwwwk', '.kwwwwwk.', '..kkkkk..', '.........'],
+  storm: ['.w..w..w.', '.........', 'kkkk.kkkk', 'keeek.eek', 'kkkk.kkkk', '.........', '..kkkkk..', '..keeek..', '..kkkkk..'],
+};
+for (const k in POWER_ART) SPR['power_' + k] = outlined(spriteFromArt(POWER_ART[k], POWER_PAL));   // dark outline so pickups pop on any road
+const POWER_NAMES = { shield: 'SHIELD', magnet: 'MAGNET', double: 'x2 POINTS', slowmo: 'SLOW-MO', storm: 'PAPER STORM' };
+const POWER_COLORS = { shield: '#8fbfff', magnet: '#ff5a5f', double: '#ffd23f', slowmo: '#7fd0c4', storm: '#f7f4ea' };
+
+function powerOn(type) { return game.power && game.power.type === type && game.power.t > 0; }
+
+// About one every powerEvery seconds of route riding (the clock carries over
+// from day to day), somewhere you can ride into.
+function spawnPowerups(dt) {
+  if (game.phase !== 'route') return;
+  game.powerClock += dt;
+  if (game.powerClock < game.nextPowerAt) return;
+  game.nextPowerAt = game.powerClock + rand(CONFIG.powerEvery[0], CONFIG.powerEvery[1]);
+  const z = game.dist + view.bikeY + CONFIG.spawnMargin * 0.5;
+  if (z > game.routeEndZ - 150 || nearTrack(z)) { game.nextPowerAt = game.powerClock + 2; return; }
+  const xs = [];
+  for (let x = L.bikeMinX + 14; x <= L.bikeMaxX - 14; x += 12) xs.push(x);
+  xs.sort(() => Math.random() - 0.5);
+  const clear = (x) => !game.obstacles.some((o) => o.type !== 'streetcar' && Math.abs(o.x - x) < o.w / 2 + 24 && Math.abs(o.z - z) < o.h / 2 + 60) &&
+    !game.ramps.some((r) => Math.abs(r.z - z) < 80);
+  const x = xs.find(clear);
+  if (x === undefined) { game.nextPowerAt = game.powerClock + 2; return; }   // nothing clear here: try again shortly
+  game.powerups.push({ type: weightedPick(CONFIG.powerWeights), x, z, taken: false, seed: Math.random() * 10 });
+}
+function collectPowerups() {
+  for (const p of game.powerups) {
+    if (p.taken || Math.abs(p.x - bike.x) > PLAYER.hw + CONFIG.powerPickupR || Math.abs(p.z - game.dist) > PLAYER.hl + CONFIG.powerPickupR * 0.6) continue;
+    p.taken = true;
+    if (p.type === 'shield') game.shield = true;
+    else game.power = { type: p.type, t: CONFIG.powerTime[p.type], max: CONFIG.powerTime[p.type] };
+    sfx.power(p.type);
+    burst(p.x, p.z, POWER_COLORS[p.type], 14, 140);
+    popText(POWER_NAMES[p.type] + '!', p.x, p.z + 40, POWER_COLORS[p.type], 20);
+  }
+  game.powerups = game.powerups.filter((p) => !p.taken && p.z > game.dist - view.H);
+}
+function drawPowerup(p, t) {   // floating pickup (drawn in depth order with the world)
+  {
+    const y = sy(p.z);
+    if (y < -40 || y > view.H + 20) return;
+    const bob = Math.sin(t * 4 + p.seed) * 3;
+    drawSpriteC(SPR.shadowS, p.x, y + 2);
+    const [gx, gy] = proj(p.x, p.z, 16 + bob);
+    pix.globalAlpha = 0.35 + 0.2 * Math.sin(t * 6 + p.seed);
+    pix.fillStyle = POWER_COLORS[p.type];
+    ringPixels(p.x, p.z, 13, 9);
+    pix.globalAlpha = 1;
+    const img = SPR['power_' + p.type];
+    pix.drawImage(img, Math.round(bx(gx) - img.width), Math.round(by(gy) - img.height * 2), img.width * 2, img.height * 2);
+  }
+}
+// Visual on the bike for whatever is active.
+function drawPowerFx(t, x, y) {
+  const P = (dx, dy, c) => { pix.fillStyle = c; pix.fillRect(Math.round(bx(x + dx)), Math.round(by(y + dy)), 1, 1); };
+  if (game.shield) {   // bubble
+    pix.globalAlpha = 0.5 + 0.2 * Math.sin(t * 5);
+    pix.fillStyle = '#8fbfff';
+    for (let a = 0; a < 40; a++) { const an = a / 40 * Math.PI * 2; pix.fillRect(Math.round(bx(x + Math.cos(an) * 24)), Math.round(by(y - 22 + Math.sin(an) * 34)), 1, 1); }
+    pix.globalAlpha = 1;
+  }
+  if (!game.power || game.power.t <= 0) return;
+  const type = game.power.type;
+  if (type === 'magnet') for (let i = 0; i < 2; i++) { const an = t * 6 + i * Math.PI; P(Math.cos(an) * 20, -22 + Math.sin(an) * 12, i ? '#3a7bd5' : '#ff5a5f'); P(Math.cos(an) * 20 + 2, -22 + Math.sin(an) * 12, i ? '#3a7bd5' : '#ff5a5f'); }
+  if (type === 'double') for (let i = 0; i < 6; i++) { const an = t * 3 + i * 1.05; if (Math.floor(t * 10 + i) % 3) P(Math.cos(an) * 18, -24 + Math.sin(an) * 28, '#ffd23f'); }
+  if (type === 'slowmo') { pix.globalAlpha = 1 - (t * 1.5 % 1); pix.fillStyle = '#7fd0c4'; ringPixels(bike.x, game.dist, 14 + (t * 1.5 % 1) * 20, 10 + (t * 1.5 % 1) * 14); pix.globalAlpha = 1; }
+  if (type === 'storm') for (let i = 0; i < 4; i++) { const an = -t * 7 + i * 1.57; P(Math.cos(an) * 22, -20 + Math.sin(an) * 14, '#f7f4ea'); P(Math.cos(an) * 22 + 2, -20 + Math.sin(an) * 14, '#f7f4ea'); }
+}
+// Magnet: steer a paper's z toward the nearest subscriber's mailbox on its side.
+function magnetPull(p) {
+  let best = null;
+  for (const h of game.houses) {
+    if (h.side !== p.side || !canDeliver(h) || Math.abs(h.mailZ - p.z) > CONFIG.magnetRange) continue;
+    if (!best || Math.abs(h.mailZ - p.z) < Math.abs(best.mailZ - p.z)) best = h;
+  }
+  if (!best) return;
+  const left = Math.max(0.04, (p.lx - L.mailboxX) / CONFIG.throwSpeed);
+  p.vz = clamp((best.mailZ - p.z) / left, -CONFIG.magnetMaxVz, CONFIG.magnetMaxVz);
+}
+// HUD: active power-up + countdown bar under the score; shield badge.
+function drawPowerHUD(top) {
+  let y = top + 74;
+  const row = (type, frac) => {
+    const img = SPR['power_' + type];
+    ctx.drawImage(img, 12, y, 18, 18);
+    ctx.font = `8px ${FONT}`;
+    textShadowed(POWER_NAMES[type], 36, y + 9, POWER_COLORS[type]);
+    if (frac !== null) {
+      ctx.fillStyle = 'rgba(10,12,22,0.7)'; ctx.fillRect(36, y + 12, 84, 5);
+      ctx.fillStyle = POWER_COLORS[type]; ctx.fillRect(37, y + 13, Math.max(0, 82 * frac), 3);
+    }
+    y += 22;
+  };
+  if (game.power && game.power.t > 0) row(game.power.type, game.power.t / game.power.max);
+  if (game.shield) row('shield', null);
+}
+
+// --- Bigger, outlined player sprite ---
+function scaleNN(src, k) {   // nearest-neighbour scale (keeps hard pixels)
+  const w = Math.round(src.width * k), h = Math.round(src.height * k), c = makeCanvas(w, h), g = c.getContext('2d');
+  const s = src.getContext('2d').getImageData(0, 0, src.width, src.height).data, out = g.createImageData(w, h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = ((Math.min(src.height - 1, Math.floor(y / k))) * src.width + Math.min(src.width - 1, Math.floor(x / k))) * 4, o = (y * w + x) * 4;
+    out.data[o] = s[i]; out.data[o + 1] = s[i + 1]; out.data[o + 2] = s[i + 2]; out.data[o + 3] = s[i + 3];
+  }
+  g.putImageData(out, 0, 0);
+  return c;
+}
+function outlined(src, color = PAL.k) {   // 1px dark outline all round
+  const w = src.width + 2, h = src.height + 2, s = src.getContext('2d').getImageData(0, 0, src.width, src.height).data;
+  const on = (x, y) => x >= 0 && y >= 0 && x < src.width && y < src.height && s[(y * src.width + x) * 4 + 3] > 0;
+  const c = spriteFromFn(w, h, (px) => {
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      if (!on(x - 1, y - 1) && (on(x - 2, y - 1) || on(x, y - 1) || on(x - 1, y - 2) || on(x - 1, y))) px(x, y, color);
+    }
+  });
+  c.getContext('2d').drawImage(src, 1, 1);
+  return c;
+}
+SPR.playerShadow = spriteFromFn(20, 30, (px) => {
+  for (let y = 0; y < 30; y++) for (let x = 0; x < 20; x++) {
+    const d = ((x + 0.5 - 10) / 10) ** 2 + ((y + 0.5 - 15) / 15) ** 2;
+    if (d <= 1) px(x, y, d < 0.55 ? 'rgba(0,0,0,0.42)' : 'rgba(0,0,0,0.26)');
+  }
+});
+SPR.playerGlow = spriteFromFn(30, 42, (px) => {   // soft light pool so the bike reads on any road
+  for (let y = 0; y < 42; y++) for (let x = 0; x < 30; x++) {
+    const d = ((x + 0.5 - 15) / 15) ** 2 + ((y + 0.5 - 21) / 21) ** 2;
+    if (d <= 1) px(x, y, `rgba(255,246,210,${(CONFIG.playerHighlight * (1 - d)).toFixed(3)})`);
+  }
+});
+
+// --- Garage screen ---
+const garUI = {
+  panel: document.getElementById('screen-garage'),
+  list: document.getElementById('garage-list'),
+  preview: document.getElementById('garage-preview'),
+  paints: document.getElementById('garage-paints'),
+};
+function renderGarage() {
+  const bk = equippedBike();
+  garUI.preview.innerHTML = '';
+  const big = cloneCanvas(makeBikeIcon(bk, bikeModel()));
+  big.className = 'px side';
+  garUI.preview.appendChild(big);
+  const top = cloneCanvas(SPR.riderA);
+  top.className = 'px top';
+  garUI.preview.appendChild(top);
+  garUI.list.innerHTML = '';
+  for (const m of MODELS) {
+    const open = modelUnlocked(m), sel = bikeModel() === m.id;
+    const card = document.createElement('div');
+    card.className = 'garage-item' + (sel ? ' sel' : '') + (open ? '' : ' locked');
+    const ic = cloneCanvas(makeBikeIcon(open ? bk : { id: 'lock', frame: '#4a4f5a', bar: '#4a4f5a', tire: '#3a3f4a' }, m.id));
+    ic.className = 'px';
+    card.appendChild(ic);
+    const info = document.createElement('div');
+    info.className = 'garage-info';
+    info.innerHTML = `<b>${m.name}</b><span>${m.perk}</span>`;
+    if (!open) {
+      const [a, b] = m.prog();
+      info.innerHTML += `<em>🔒 ${m.goal}</em><div class="bar"><i style="width:${Math.round(a / b * 100)}%"></i></div><small>${m.label}: ${a}/${b}</small>`;
+    }
+    card.appendChild(info);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'aud-btn' + (sel ? ' equipped' : '');
+    btn.textContent = sel ? 'RIDING' : open ? 'RIDE' : 'LOCKED';
+    btn.disabled = sel || !open;
+    btn.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); garage.model = m.id; saveGarage(); applyRider(); renderGarage(); });
+    card.appendChild(btn);
+    garUI.list.appendChild(card);
+  }
+  garUI.paints.innerHTML = '';
+  for (const b of BIKES.filter(owned)) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'paint-chip' + (b.id === bk.id ? ' sel' : '');
+    chip.title = b.name;
+    chip.style.background = b.frame;
+    chip.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); shop.equipped.bike = b.id; saveShop(); applyRider(); renderGarage(); });
+    garUI.paints.appendChild(chip);
+  }
+}
+function showGarage() {
+  game.state = 'menu';
+  renderGarage();
+  showPanel(garUI.panel);
+}
+document.getElementById('garage-btn').addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showGarage(); });
+document.getElementById('garage-back').addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showTitle(); });
+document.getElementById('garage-shop').addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showShop('bikes'); });
+
+
+// ---------------------------------------------------------------------
 // 9c. RIDERS, CUTSCENES, MEDALS
 // Riders are cosmetic only: a palette + hairstyle applied to the bike sprite
 // and to a front-view figure used for portraits and cutscenes. Cutscenes are
@@ -4841,13 +5178,22 @@ function riderTopSprite(r0, frame) {
   const r = look(r0), bk = equippedBike();
   const rows = SPRITE_ART[frame ? 'riderB' : 'riderA'].map((row) => row.split(''));
   for (let y = RIDER_TOP.length; y <= RIDER_TOP.length + 3; y++) rows[y] = rows[y].map((ch) => (ch === 'w' ? 'f' : ch));   // frame + rear fender in the bike color
+  rows[1] = rows[1].map((ch) => (ch === 'w' ? 'f' : ch));   // front fender
+  const set = (y, str) => { rows[y] = str.split(''); }, B = RIDER_TOP.length + 3;   // B = first rear-wheel row
+  switch (bikeModel()) {
+    case 'fat': set(0, '....kkkk....'); set(1, '....ffff....'); set(B, '...kffffk...'); set(B + 1, '...kwwwwk...'); set(B + 2, '....kkkk....'); break;
+    case 'bmx': rows[B + 1][3] = 'g'; rows[B + 1][8] = 'g'; break;
+    case 'cruiser': set(2, 'kggggwwggggk'); break;
+    case 'road': set(2, '..kggwwggk..'); break;
+    case 'ebike': rows[RIDER_TOP.length][5] = 'b'; rows[RIDER_TOP.length][6] = 'b'; rows[RIDER_TOP.length + 1][5] = 'b'; rows[RIDER_TOP.length + 1][6] = 'B'; break;
+  }
   for (const [y, x, str] of TOP_HAIR[r.style === 'ponytail' && frame ? 'ponytailB' : r.style]) {
     for (let i = 0; i < str.length; i++) if (str[i] !== ' ') rows[y][x + i] = str[i];
   }
   return spriteFromArt(rows.map((row) => row.join('')), {
     ...PAL, s: r.skin, c: r.helmet, o: r.shirt, O: shade(r.shirt, 0.78), n: r.pants,
     h: r.hair, H: hairShade(r.hair), j: r.hair, J: shade(r.hair, 0.75),
-    f: bk.frame, g: bk.bar, w: bk.tire,
+    f: bk.frame, g: bk.bar, w: bk.tire, b: '#2ec4b6', B: '#ffd23f',
   });
 }
 
@@ -5004,6 +5350,7 @@ function checkUnlocks(silent) {
     if (!silent) unlockQueue.push(r);
   }
   if (changed) saveProgress();
+  checkModelUnlocks(silent);
 }
 checkUnlocks(true);   // progress from before unlocks existed counts
 let rider = RIDERS.find((r) => r.id === storage.get(RIDER_KEY, '') && isUnlocked(r)) || null;
@@ -5013,6 +5360,8 @@ function applyRider() {
   const r = curRider();
   SPR.riderA = riderTopSprite(r, 0);
   SPR.riderB = riderTopSprite(r, 1);
+  SPR.riderBigA = outlined(scaleNN(SPR.riderA, CONFIG.playerScale));   // gameplay: bigger + 1px dark outline
+  SPR.riderBigB = outlined(scaleNN(SPR.riderB, CONFIG.playerScale));
 }
 applyRider();
 function noteFurthest() {   // called each new day
@@ -5558,11 +5907,11 @@ function pumpUnlocks() {
   if (!unlockQueue.length || game.state === 'cutscene') return;
   const r = unlockQueue.shift();
   selUI.pop.innerHTML = '';
-  const pc = makePortrait(r, '#1a1c2c');
-  pc.className = 'px';
+  const pc = r.bikeModel ? cloneCanvas(makeBikeIcon(equippedBike(), r.bikeModel.id)) : makePortrait(r, '#1a1c2c');
+  pc.className = 'px' + (r.bikeModel ? ' bikepop' : '');
   selUI.pop.appendChild(pc);
   const t = document.createElement('div');
-  t.innerHTML = `<b>NEW RIDER!</b><span>${r.name} · ${SKILLS[r.skill].name}</span>`;
+  t.innerHTML = r.bikeModel ? `<b>NEW BIKE!</b><span>${r.bikeModel.name} · in the Garage</span>` : `<b>NEW RIDER!</b><span>${r.name} · ${SKILLS[r.skill].name}</span>`;
   selUI.pop.appendChild(t);
   selUI.pop.classList.remove('hidden');
   pop.until = now + CONFIG.unlockPopTime * 1000;
@@ -5579,6 +5928,10 @@ function drawSkillHUD(top) {
   ctx.globalAlpha = r.skill === 'secondWind' && game.secondWind <= 0 ? 0.25 : 1;
   ctx.drawImage(img, x, y, sz, sz);
   ctx.globalAlpha = 1;
+  const bi = makeBikeIcon(equippedBike(), bikeModel()), bw = 30, bh = 19, bx0 = x - 12 - bw;   // bike model (perk)
+  ctx.fillStyle = 'rgba(10,12,22,0.55)';
+  ctx.fillRect(bx0 - 4, y - 4, bw + 8, sz + 8);
+  ctx.drawImage(bi, bx0, y + (sz - bh) / 2, bw, bh);
 }
 
 // Start from the title: pick a rider the first time, then the intro, then ride.

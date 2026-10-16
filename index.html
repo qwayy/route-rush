@@ -31,6 +31,7 @@
       <div class="title-btns">
         <button id="rider-btn" class="aud-btn" type="button"><span id="title-face"></span>RIDER</button>
         <button id="medals-btn" class="aud-btn" type="button">🏅 MEDALS</button>
+        <button id="garage-btn" class="aud-btn" type="button">🚲 GARAGE</button>
         <button id="shop-btn" class="aud-btn" type="button">🛒 SHOP</button>
         <button id="spin-btn" class="aud-btn" type="button">🎡 DAILY SPIN</button>
       </div>
@@ -127,7 +128,7 @@
       <p class="wallet"><span class="coin-ico"></span><b id="shop-coins">0</b></p>
       <div id="shop-tabs" class="shop-tabs">
         <button type="button" data-tab="outfits">OUTFITS</button>
-        <button type="button" data-tab="bikes">BIKES</button>
+        <button type="button" data-tab="bikes">PAINT</button>
         <button type="button" data-tab="papers">PAPERS</button>
         <button type="button" data-tab="trails">TRAILS</button>
         <button type="button" data-tab="coins">COINS</button>
@@ -137,6 +138,17 @@
       <p id="shop-msg" class="toast"></p>
       <button id="shop-debug" class="aud-btn hidden" type="button">DEBUG: +5,000 COINS</button>
       <button id="shop-back" class="share alt small" type="button">BACK</button>
+    </section>
+
+    <section id="screen-garage" class="panel menu-panel hidden">
+      <h2>Garage</h2>
+      <div id="garage-preview" class="garage-preview"></div>
+      <p class="keys">Bike models have perks and are earned, never sold.</p>
+      <div id="garage-list" class="garage-list"></div>
+      <p class="label garage-paint-label">Paint job</p>
+      <div id="garage-paints" class="garage-paints"></div>
+      <button id="garage-shop" class="link-btn" type="button">GET MORE PAINT IN THE SHOP</button>
+      <button id="garage-back" class="share alt small" type="button">BACK</button>
     </section>
 
     <section id="screen-spin" class="panel menu-panel hidden">
