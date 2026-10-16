@@ -228,7 +228,7 @@ const CONFIG = {
   continueInvuln: 2,         // KEEP RIDING: seconds of blinking after resuming
 
   // Player visibility
-  playerScale: 1.5,          // bike + rider drawn this much bigger (hitbox scales with it)
+  PLAYER_SCALE: 1.3,         // bike + rider drawn this much bigger than the art (hitbox scales with it)
   playerHighlight: 0.22,     // strength of the light pool under the bike
 
   // Bike models (perks). Unlocked by challenges only, never sold.
@@ -276,7 +276,7 @@ const CONFIG = {
 };
 
 // Player hitbox matches the drawn size.
-const PLAYER = { hw: CONFIG.bikeHalfW * CONFIG.playerScale, hl: CONFIG.bikeHalfL * CONFIG.playerScale };
+const PLAYER = { hw: CONFIG.bikeHalfW * CONFIG.PLAYER_SCALE, hl: CONFIG.bikeHalfL * CONFIG.PLAYER_SCALE };
 const BEST_KEY = 'routeRush.best';
 const TILT_KEY = 'routeRush.tiltSensitivity';
 const DAY_NAMES = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY'];
@@ -328,11 +328,16 @@ const THEMES = [
   },
   {
     name: 'PLAZA',                                        // Wednesday: Spanish/Moorish-style shopping district
-    houses: { plazaShop: 6, plazaApartment: 3 },
-    ground: { ...BASE_GROUND, grass: '#58a24c', grassStripe: '#519a46', sidewalk: '#e2d3b8', sidewalkJoint: '#c8b896', curb: '#f0e6d2', street: '#3f3a3a', streetDark: '#353030', streetLight: '#4d4747' },
+    houses: { plazaShop: 6, plazaApartment: 3, plazaTerrace: 2 },
+    ground: { ...BASE_GROUND, grass: '#58a24c', grassStripe: '#519a46', sidewalk: '#e2d3b8', sidewalkJoint: '#c8b896', curb: '#f0e6d2', street: '#3f3a3a', streetDark: '#353030', streetLight: '#4d4747',
+      paving: '#e7d8bc', pavingJoint: '#cdbb98', pavingAccent: '#d9c39c', brick: '#c98a62', brickJoint: '#a86a48' },
+    paved: true,                                          // no lawns: tiled plazas, brick sidewalks, buildings packed side by side
+    fillers: 0.7,                                         // chance a gap between buildings is filled with more buildings (decor only)
+    shopSigns: ['CAFÉ', 'BOOKS', 'SHOES', 'GIFTS', 'TOYS', 'BAKERY', 'ART', 'TAPAS', 'HATS'],
+    sidewalkDecor: 95,                                    // potted trees / flower planters along the sidewalks, this far apart
     trees: { green: 5, gold: 1 },
-    leaves: 0.05, leafColors: FALL_LEAVES,
-    decor: { planter: 4, tree: 2, fountain: 1 },
+    leaves: 0, leafColors: FALL_LEAVES,
+    decor: { planter: 3, pottedTree: 3, patio: 2, fountain: 1 },
     plazas: 0.55,                                         // chance a side yard becomes a paved plaza with a grand fountain
     lamps: 85,                                            // ornate lamp posts along the sidewalks, this far apart
     crosswalks: 600,                                      // brick crosswalks across the boulevard, this far apart
@@ -440,12 +445,17 @@ const HOUSE_STYLES = {
   // get a corner bell tower or domed tower (towers: chance of each).
   plazaShop: {
     finish: 'stucco', roof: 'tile', roofH: 10, wallH: [30, 38], porch: 'stoop', door: 'arch', paved: true, arches: true,
-    walls: ['#f3e3c3', '#e6cfa3', '#f2c9a5', '#efd9b4'], roofs: ['#b8502f', '#c45a35', '#a84a2c'], trims: ['#6b4226', '#8a5a3a'],
-    awnings: ['#8c2f2f', '#2f5d4a', '#2b3f66', '#b8862f'], towers: { bell: 0.1, dome: 0.18 },
+    walls: ['#f3e3c3', '#e6cfa3', '#f2c9a5', '#efd9b4', '#f4c2a6', '#f0b89a'], roofs: ['#b8502f', '#c45a35', '#a84a2c', '#cf6a3a'], trims: ['#6b4226', '#8a5a3a'],
+    awnings: ['#8c2f2f', '#2f5d4a', '#2b3f66', '#b8862f', '#c4572f', '#3f7f7a'], towers: { bell: 0.08, dome: 0.12, point: 0.08 },
   },
   plazaApartment: {
     finish: 'stucco', roof: 'tile', roofH: 14, wallH: [46, 56], porch: 'canopy', door: 'arch', paved: true, arches: true, balconies: true,
-    walls: ['#f2dcb8', '#ead2a8', '#f5d2b5'], roofs: ['#b8502f', '#c45a35'], trims: ['#6b4226'], towers: { bell: 0.05, dome: 0.25 },
+    walls: ['#f2dcb8', '#ead2a8', '#f5d2b5', '#f3c4a8'], roofs: ['#b8502f', '#c45a35', '#cf6a3a'], trims: ['#6b4226'], towers: { bell: 0.05, dome: 0.18, point: 0.1 },
+  },
+  plazaTerrace: {   // 2-3 stories, flat roof with a tiled rooftop terrace, shop below
+    finish: 'stucco', roof: 'terrace', wallH: [58, 72], porch: 'stoop', door: 'arch', paved: true, arches: true, balconies: true,
+    walls: ['#f4c2a6', '#efd9b4', '#e6cfa3', '#f2c9a5'], roofs: ['#c9946a', '#d2a079'], trims: ['#6b4226', '#8a5a3a'],
+    awnings: ['#8c2f2f', '#2f5d4a', '#2b3f66', '#b8862f', '#c4572f'], towers: { bell: 0, dome: 0.12, point: 0.12 },
   },
   loft: {
     finish: 'brick', roof: 'flat', wallH: [56, 66], porch: 'canopy', door: 'glass', paved: true, mural: true, tower: 0.35,
@@ -938,7 +948,8 @@ function layoutDay() {
   }
   game.routeEndZ = end + 40;
   setPropertyBounds();
-  addTrees(-view.H, z0 - 40);
+  if (th.paved) for (const side of [-1, 1]) fillWithBuildings(side, -view.H - 200, z0 - 50, mulberry32(game.day * 31 + side + 7));
+  else addTrees(-view.H, z0 - 40);
 
   for (let k = 1; k <= th.streetcars; k++) addStreetcar(z0 + (end - z0) * k / (th.streetcars + 1));
 
@@ -948,6 +959,7 @@ function layoutDay() {
   const bonusSpeed = speedFor(game.day, CONFIG.housesPerSide * 2);
   buildBonus(bz0, bz0 + CONFIG.bonusDuration * bonusSpeed);
   addLamps(-view.H, game.bonus.z1 + 400);
+  addSidewalkDecor(-view.H, game.bonus.z1 + 400);
   clearScoringZones();
 }
 
@@ -959,7 +971,7 @@ function layoutDay() {
 const PROP_SIZE = {   // [half-width, half-depth, height]
   tree: [16, 14, 60], bush: [12, 6, 12], fountain: [16, 12, 30], grandFountain: [30, 20, 44], planter: [7, 5, 10],
   smoker: [10, 8, 24], grill: [9, 7, 18], crowd: [22, 8, 26], lamp: [10, 3, 42], patio: [13, 10, 24],
-  jogside: [6, 4, 22], sidefence: [37, 2, 12], lightPost: [3, 3, 30], signal: [7, 2, 36],
+  jogside: [6, 4, 22], sidefence: [37, 2, 12], lightPost: [3, 3, 30], signal: [7, 2, 36], pottedTree: [10, 8, 28],
 };
 function propBox(d) {
   const [rx, rz, h] = PROP_SIZE[d.type] || [10, 8, 20], k = d.type === 'grandFountain' ? d.s : 1;
@@ -1023,6 +1035,18 @@ function addLamps(zFrom, zTo) {
   }
 }
 
+// Plaza sidewalks: potted trees and flower planters between the lamp posts.
+function addSidewalkDecor(zFrom, zTo) {
+  const gap = theme().sidewalkDecor;
+  if (!gap) return;
+  for (const side of [-1, 1]) {
+    let k = 0;
+    for (let z = zFrom + gap * 0.5 + (side > 0 ? gap * 0.25 : 0); z < zTo; z += gap, k++) {
+      game.decor.push({ type: k % 2 ? 'planter' : 'pottedTree', x: sideX(side, 121), z, seed: (k * 37 + (side > 0 ? 11 : 0)) % 100 });
+    }
+  }
+}
+
 // Each lot reaches propertyMargin into its side yards, but never past the
 // halfway point to the neighbor, so two properties never overlap.
 function setPropertyBounds() {
@@ -1070,12 +1094,13 @@ function makeHouse(tpl, side, z, len, rng, scenery) {
   };
 }
 
-function pickSpire(towers, r) { return r < towers.bell ? 'bell' : r < towers.bell + towers.dome ? 'dome' : null; }
+function pickSpire(towers, r) { const pt = towers.point || 0; return r < towers.bell ? 'bell' : r < towers.bell + towers.dome ? 'dome' : r < towers.bell + towers.dome + pt ? 'point' : null; }
 
 // Side yard between two houses: maybe a driveway, maybe a fence along the
 // lot line, then trees / fountains / smokers / crowds from the theme.
 function decorateGap(side, za, zb, rng, st) {
   const gap = zb - za, th = theme();
+  if (th.paved) { plazaGap(side, za, zb, rng); return; }
   if (gap < 30) return;
   if (th.plazas && gap > 110 && rng() < th.plazas) {   // paved plaza with a grand fountain
     game.pavedLots.push({ side, z0: za, z1: zb });
@@ -1093,6 +1118,40 @@ function decorateGap(side, za, zb, rng, st) {
   for (let k = 0; k < n; k++) game.decor.push(makeDecor(side, lerp(from, zb - 12, (k + 0.5) / n), rng));
 }
 
+// Plaza: no side yards. A gap becomes more buildings (narrow alleys between),
+// a small courtyard with a fountain, or a café terrace with planters.
+function plazaGap(side, za, zb, rng) {
+  const gap = zb - za, th = theme();
+  if (gap < 30) { game.decor.push({ type: 'planter', x: sideX(side, 60), z: (za + zb) / 2, seed: (rng() * 100) | 0 }); return; }
+  const r = rng();
+  if (gap >= 70 && r < th.fillers) { fillWithBuildings(side, za + 8, zb - 8, rng); return; }
+  if (gap > 110 && r < th.fillers + (1 - th.fillers) * 0.6) {
+    game.pavedLots.push({ side, z0: za, z1: zb });
+    game.decor.push({ type: 'grandFountain', x: sideX(side, 58), z: (za + zb) / 2, s: Math.min(1.25, (gap - 30) / 110) });
+    for (const pz of [za + 10, zb - 10]) game.decor.push({ type: 'planter', x: sideX(side, 96), z: pz, seed: (rng() * 100) | 0 });
+    return;
+  }
+  const n = Math.max(1, Math.floor(gap / 45));   // café terrace
+  for (let k = 0; k < n; k++) game.decor.push({ type: 'patio', x: sideX(side, lerp(34, 70, rng())), z: lerp(za + 16, zb - 16, (k + 0.5) / n), seed: (rng() * 1e6) | 0 });
+  game.decor.push({ type: 'pottedTree', x: sideX(side, 92), z: (za + zb) / 2, seed: (rng() * 100) | 0 });
+}
+// Decor-only buildings packed into a stretch of street (no subscriber, no mailbox,
+// papers fly straight through them, so scoring is exactly as before).
+function fillWithBuildings(side, z0, z1, rng) {
+  let z = z0;
+  while (z1 - z >= 40) {
+    const len = Math.min(z1 - z, lerp(48, 110, rng()));
+    if (z1 - z - len < 40) {   // no sliver left over
+      const h = makeHouse(null, side, z, z1 - z, rng, true);
+      h.filler = true; game.houses.push(h);
+      return;
+    }
+    const h = makeHouse(null, side, z, len, rng, true);
+    h.filler = true; game.houses.push(h);
+    z += len + 6;   // narrow alley
+  }
+}
+
 // Something for the gap between two houses (decor only, papers fly past).
 function makeDecor(side, z, rng) {
   const th = theme(), type = weightedPick(th.decor, rng);
@@ -1100,6 +1159,8 @@ function makeDecor(side, z, rng) {
     case 'tree': return { type, x: sideX(side, lerp(26, 52, rng())), z, pal: weightedPick(th.trees, rng) };
     case 'fountain': return { type, x: sideX(side, lerp(66, 78, rng())), z };
     case 'planter': return { type, x: sideX(side, lerp(84, 96, rng())), z, seed: (rng() * 100) | 0 };
+    case 'pottedTree': return { type, x: sideX(side, lerp(60, 92, rng())), z, seed: (rng() * 100) | 0 };
+    case 'patio': return { type, x: sideX(side, lerp(40, 80, rng())), z, seed: (rng() * 1e6) | 0 };
     case 'smoker':
     case 'grill': return { type, x: sideX(side, lerp(50, 70, rng())), z };
     case 'crowd': return { type, x: sideX(side, lerp(58, 78, rng())), z, n: 3 + ((rng() * 3) | 0), seed: (rng() * 1e6) | 0 };
@@ -1531,7 +1592,7 @@ function update(dt) {
   // means no points).
   for (const h of game.houses) {
     if (!h.sub || h.delivered || h.missed || !h.passed) continue;
-    const st = HOUSE_STYLES[h.style], top = h.wallH + (st.roof === 'flat' ? 6 : st.roofH);
+    const st = HOUSE_STYLES[h.style], top = h.wallH + (st.roof === 'flat' || st.roof === 'terrace' ? 6 : st.roofH);
     const screenY = view.bikeY - (h.propZ1 - game.dist) - top * CONFIG.heightY;   // top of the house, on screen
     if (screenY < view.H) continue;
     if (game.flying.some((p) => p.side === h.side && p.z >= h.propZ0 && p.z <= h.propZ1)) continue;
@@ -1799,6 +1860,7 @@ function paperHit(p, a) {
   }
   for (const h of game.houses) {
     if (h.side !== p.side || p.z < h.propZ0 - 40 || p.z > h.propZ1 + 40) continue;
+    if (h.filler) continue;   // Plaza decor buildings: papers aren't stopped by them
     if (h.scenery) { test(FAR, L.wallX, h.z, h.z + h.len, { type: 'thud', h }); continue; }
     if (h.sub) {
       const zone = subZoneAt(h, (a[1] + b[1]) / 2);
@@ -2547,6 +2609,31 @@ function render(now) {
   ctx.restore();
 }
 
+// Plaza ground: big cream tiles with an accent pattern everywhere off the
+// street, and patterned brick sidewalks along the curb. No grass.
+function drawPaving(G, ext, top, tall) {
+  const ps = CONFIG.pixelSize;
+  for (const side of [-1, 1]) {
+    const xa = side < 0 ? -ext : view.W - L.sidewalkX0;   // lot side of the sidewalk
+    const w = L.sidewalkX0 + ext;
+    forEachWorldLine(16, (y, k) => {
+      rectL(xa, y, w, ps, G.pavingJoint);
+      for (let col = 0; col * 16 < w; col++) {
+        const x = xa + col * 16;
+        rectL(x, y - 16, ps, 16, G.pavingJoint);
+        if ((col + k) % 4 === 0) rectL(x + 4, y - 12, 8, 8, G.pavingAccent);   // diamond-ish accent tiles
+      }
+    });
+    const sx = side < 0 ? L.sidewalkX0 : sideX(1, L.sidewalkX1), sw = L.sidewalkX1 - L.sidewalkX0;
+    rectL(sx, top, sw, tall, G.brick);
+    forEachWorldLine(6, (y, k) => {   // running-bond bricks
+      rectL(sx, y, sw, ps * 0.5, G.brickJoint);
+      for (let x = sx + (k % 2) * 5; x < sx + sw; x += 10) rectL(x, y - 6, ps * 0.5, 6, G.brickJoint);
+    });
+    rectL(side < 0 ? L.sidewalkX0 : sideX(1, L.sidewalkX0) - ps, top, ps, tall, G.pavingJoint);   // edge band
+  }
+}
+
 // Calls fn(y, k) for each line of a world-anchored repeating pattern.
 function forEachWorldLine(period, fn) {
   const m = PAD * CONFIG.pixelSize + period;
@@ -2559,8 +2646,10 @@ function drawGround() {
   const G = theme().ground, th = theme();
   const ps = CONFIG.pixelSize, ext = PAD * ps;
   const top = -ext, tall = view.H + ext * 2;
-  pix.fillStyle = G.grass;
+  pix.fillStyle = th.paved ? G.paving : G.grass;
   pix.fillRect(0, 0, buf.width, buf.height);
+  if (th.paved) drawPaving(G, ext, top, tall);
+  else {
 
   // Mowed lawn stripes, grass tufts, fallen leaves
   forEachWorldLine(80, (y) => {
@@ -2583,10 +2672,11 @@ function drawGround() {
       }
     }
   });
+  }
 
-  // Sidewalks
+  // Sidewalks (the Plaza draws its own brick ones)
   const sw = L.sidewalkX1 - L.sidewalkX0;
-  for (const side of [-1, 1]) {
+  if (!th.paved) for (const side of [-1, 1]) {
     const x0 = side < 0 ? L.sidewalkX0 : sideX(1, L.sidewalkX1);
     rectL(x0, top, sw, tall, G.sidewalk);
     forEachWorldLine(32, (y) => rectL(x0, y, sw, ps, G.sidewalkJoint));
@@ -2601,13 +2691,16 @@ function drawGround() {
     rectL(xa, ya, L.streetX0 - 20, ps, '#b1ab9d');
   }
 
-  // Paved plazas (Plaza side yards)
+  // Paved plazas (Plaza courtyards): a ring of brick around the fountain
   for (const p of game.pavedLots) {
     const ya = sy(p.z1), yb = sy(p.z0);
     if (yb < -10 || ya > view.H + 10) continue;
-    const xa = p.side < 0 ? -ext : view.W - L.sidewalkX0, w = L.sidewalkX0 + ext;
-    rectL(xa, ya, w, yb - ya, G.sidewalk);
-    for (let zz = p.z0 + 12; zz < p.z1; zz += 12) rectL(xa, sy(zz), w, ps, G.sidewalkJoint);
+    const cx = sideX(p.side, 58), cz = (p.z0 + p.z1) / 2, r = Math.min(40, (p.z1 - p.z0) / 2 - 4);
+    pix.fillStyle = G.brick || G.sidewalkJoint;
+    ringPixels(cx, cz, r, r * 0.75);
+    ringPixels(cx, cz, r - 1, r * 0.75 - 1);
+    pix.fillStyle = G.pavingAccent || G.sidewalk;
+    ringPixels(cx, cz, r - 6, r * 0.75 - 5);
   }
 
   // Street, speckles, curbs, centre dashes
@@ -2658,7 +2751,7 @@ function drawGround() {
 function drawHouse(h, t) {
   const st = HOUSE_STYLES[h.style];
   const z0 = h.z, z1 = h.z + h.len, WH = h.wallH;
-  const rh = WH + (st.roof === 'flat' ? 0 : st.roofH);
+  const rh = WH + (st.roof === 'flat' || st.roof === 'terrace' ? 0 : st.roofH);
   if (sy(z0) < -20 || sy(z1) - (rh + 40) * CONFIG.heightY > view.H + 20) return;
   const X = (x) => sideX(h.side, x);
   const q = (pts, col) => poly3(pts.map(([x, z, hh]) => [X(x), z, hh]), col);
@@ -2672,7 +2765,8 @@ function drawHouse(h, t) {
   houseGround(g);
   houseWalls(g);
   houseOpenings(g);
-  if (st.roof === 'flat') flatRoof(g); else gableRoof(g);
+  if (st.roof === 'flat') flatRoof(g); else if (st.roof === 'terrace') terraceRoof(g); else gableRoof(g);
+  if (st.porch === 'stoop' && theme().shopSigns) shopSign(g);
   if (h.spire) drawSpire(g);
   housePorch(g);
   if (h.flags) houseFlags(g);
@@ -2685,8 +2779,12 @@ function houseGround(g) {
   const G = theme().ground, hx0 = L.houseX0, wx = L.wallX;
   q([[hx0, z0 - 8, 0], [wx + 6, z0 - 8, 0], [wx + 6, z1 - 8, 0], [hx0, z1 - 8, 0]], COLORS.shadow);
   if (st.paved) {   // city lots: paved forecourt (the doorstep target is unchanged)
-    q([[wx, z0, 0], [L.sidewalkX0, z0, 0], [L.sidewalkX0, z1, 0], [wx, z1, 0]], shade(G.sidewalk, 0.95));
-    for (let zz = z0 + 16; zz < z1; zz += 16) g.l3([wx, zz, 0], [L.sidewalkX0, zz, 0], G.sidewalkJoint);
+    q([[wx, z0, 0], [L.sidewalkX0, z0, 0], [L.sidewalkX0, z1, 0], [wx, z1, 0]], shade(G.paving || G.sidewalk, 0.95));
+    for (let zz = z0 + 16; zz < z1; zz += 16) g.l3([wx, zz, 0], [L.sidewalkX0, zz, 0], G.pavingJoint || G.sidewalkJoint);
+    if (theme().paved) {   // entry mat at the door
+      q([[wx, cz - 9, 0], [wx + 12, cz - 9, 0], [wx + 12, cz + 9, 0], [wx, cz + 9, 0]], '#5a2a22');
+      q([[wx + 1, cz - 7, 0], [wx + 10, cz - 7, 0], [wx + 10, cz + 7, 0], [wx + 1, cz + 7, 0]], h.sub ? '#b8322f' : '#8c4a32');
+    }
   } else {
     q([[L.porchX1, cz - 6, 0], [L.sidewalkX0, cz - 6, 0], [L.sidewalkX0, cz + 6, 0], [L.porchX1, cz + 6, 0]], COLORS.path);
   }
@@ -2818,6 +2916,7 @@ function houseOpenings(g) {
 
   // Camera-facing wall: mural, window grid, or a window or two
   if (h.mural) drawMural(g);
+  else if (theme().shopSigns && st.porch === 'stoop') { quadZ(z0, 22, 42, 6, Math.min(16, WH - 26), frame); quadZ(z0, 24, 40, 8, Math.min(14, WH - 28), shade(COLORS.window, 0.8)); }   // small window under the sign
   else if (WH >= 50) {
     for (let v = 8; v + 10 < WH - 4; v += 15) {
       for (let u = hx0 + 5; u + 9 < wx - 3; u += 14) { quadZ(z0, u, u + 9, v, v + 10, frame); quadZ(z0, u + 1, u + 8, v + 1, v + 9, shade(COLORS.window, 0.75)); }
@@ -2869,15 +2968,89 @@ function gableRoof(g) {
     box(24, 32, cz0, cz0 + 10, WH + 6, rh + 6, st.finish === 'tudor' ? COLORS.stone : COLORS.brick);
   }
   q([[e1, ez0, eh], [e1, ez1, eh], [rx, ez1, rh], [rx, ez0, rh]], h.roof);
-  const rows = st.roof === 'tile' ? [0.2, 0.4, 0.6, 0.8] : [0.33, 0.66];
-  for (const f of rows) {
+  if (st.roof === 'tile') clayTiles(g, e0, e1, rx, eh, rh, ez0, ez1);
+  else for (const f of [0.33, 0.66]) {
     const x = lerp(e1, rx, f), hh = lerp(eh, rh, f);
-    l3([x, ez0, hh], [x, ez1, hh], shade(h.roof, st.roof === 'tile' ? 1.25 : 0.82));
+    l3([x, ez0, hh], [x, ez1, hh], shade(h.roof, 0.82));
   }
   l3([rx, ez0, rh], [rx, ez1, rh], shade(h.roof, 1.35));
   l3([e1, ez0, eh], [e1, ez1, eh], COLORS.outline);
   l3([e0, ez0, eh], [rx, ez0, rh], COLORS.outline);
   l3([rx, ez0, rh], [e1, ez0, eh], COLORS.outline);
+}
+
+// Spanish clay tiles from above: each slope is filled once with a small
+// repeating tile pattern (crown / base / trough rows with scallops), shifted
+// every frame so it scrolls with the street. Cheap: two fills per roof.
+const tileCache = new Map();
+function tilePattern(color) {
+  let pat = tileCache.get(color);
+  if (!pat) {
+    const crown = shade(color, 1.25), trough = shade(color, 0.72);
+    const c = spriteFromFn(4, 3, (px) => {
+      for (let x = 0; x < 4; x++) { px(x, 0, x === 3 ? color : crown); px(x, 1, color); px(x, 2, trough); }
+    });
+    pat = pix.createPattern(c, 'repeat');
+    tileCache.set(color, pat);
+  }
+  const off = ((view.bikeY + view.camZ) / CONFIG.pixelSize + PAD) % 3;   // keep the rows glued to the world
+  if (pat.setTransform) pat.setTransform(new DOMMatrix([1, 0, 0, 1, 0, off]));
+  return pat;
+}
+function clayTiles(g, e0, e1, rx, eh, rh, ez0, ez1) {
+  const { h, q, l3 } = g;
+  q([[e0, ez0, eh], [e0, ez1, eh], [rx, ez1, rh], [rx, ez0, rh]], tilePattern(shade(h.roof, 0.78)));
+  q([[e1, ez0, eh], [e1, ez1, eh], [rx, ez1, rh], [rx, ez0, rh]], tilePattern(h.roof));
+  q([[rx - 1.5, ez0, rh], [rx + 1.5, ez0, rh], [rx + 1.5, ez1, rh], [rx - 1.5, ez1, rh]], shade(h.roof, 0.7));   // ridge cap
+}
+
+// Rooftop terrace (Plaza): tiled deck, parapet with tile coping, umbrella, pots, stair hut.
+function terraceRoof(g) {
+  const { h, q, l3, box, z0, z1, WH } = g;
+  const hx0 = L.houseX0, wx = L.wallX;
+  q([[hx0, z0, WH], [wx, z0, WH], [wx, z1, WH], [hx0, z1, WH]], h.roof);
+  for (let zz = z0 + 12; zz < z1; zz += 12) l3([hx0, zz, WH], [wx, zz, WH], shade(h.roof, 0.85));
+  for (let xx = hx0 + 12; xx < wx; xx += 12) l3([xx, z0, WH], [xx, z1, WH], shade(h.roof, 0.85));
+  const wall = shade(h.wall, 1.05), cap = '#b8502f';
+  box(hx0, wx + 1, z0 - 1, z0 + 2, WH, WH + 5, wall, cap);
+  box(hx0, wx + 1, z1 - 2, z1 + 1, WH, WH + 5, wall, cap);
+  box(hx0 - 1, hx0 + 2, z0, z1, WH, WH + 5, wall, cap);
+  box(wx - 2, wx + 1, z0, z1, WH, WH + 5, wall, cap);
+  box(hx0 + 4, hx0 + 18, z1 - 20, z1 - 6, WH, WH + 12, shade(h.wall, 0.92), '#b8502f');   // stair hut
+  const uz = z0 + h.len * 0.45, ux = (hx0 + wx) / 2 + 6, col = h.accent || '#2f5d4a';
+  box(ux - 1, ux + 1, uz - 1, uz + 1, WH, WH + 13, '#4a4d55');   // umbrella + table
+  fillPoly(ell3(ux, uz, 11, 8, WH + 15, 8), col);
+  fillPoly(ell3(ux, uz, 5, 4, WH + 16, 8), shade(col, 1.25));
+  for (const [px, pz] of [[hx0 + 8, z0 + 8], [wx - 8, z0 + 8], [wx - 8, uz + 16]]) {   // potted plants
+    box(px - 3, px + 3, pz - 3, pz + 3, WH, WH + 5, '#b8613f');
+    fillPoly(ell3(px, pz, 4, 3, WH + 7, 8), '#3f8a3a');
+    pixelAt(px, pz, WH + 8, '#ff5a5f');
+  }
+}
+
+// Generic shop sign on the camera-facing front of a Plaza shop (no real names).
+const SIGN_FONT = {
+  A: ['.#.', '#.#', '###', '#.#', '#.#'], B: ['##.', '#.#', '##.', '#.#', '##.'], C: ['.##', '#..', '#..', '#..', '.##'],
+  E: ['###', '#..', '##.', '#..', '###'], É: ['###', '#..', '##.', '#..', '###'], F: ['###', '#..', '##.', '#..', '#..'], G: ['.##', '#..', '#.#', '#.#', '.##'],
+  H: ['#.#', '#.#', '###', '#.#', '#.#'], I: ['###', '.#.', '.#.', '.#.', '###'], K: ['#.#', '#.#', '##.', '#.#', '#.#'],
+  O: ['.#.', '#.#', '#.#', '#.#', '.#.'], P: ['##.', '#.#', '##.', '#..', '#..'], R: ['##.', '#.#', '##.', '#.#', '#.#'],
+  S: ['.##', '#..', '.#.', '..#', '##.'], T: ['###', '.#.', '.#.', '.#.', '.#.'], Y: ['#.#', '#.#', '.#.', '.#.', '.#.'],
+};
+function shopSign(g) {
+  const { h, z0, WH, X } = g, ps = CONFIG.pixelSize, words = theme().shopSigns;
+  if (!words) return;
+  const word = words[h.seed % words.length];
+  const a = proj(X(L.houseX0 + 3), z0, WH - 3), b = proj(X(L.wallX - 3), z0, WH - 23);
+  const x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]), y0 = Math.min(a[1], b[1]), y1 = Math.max(a[1], b[1]);
+  rectL(x0, y0, x1 - x0, y1 - y0, PAL.k);
+  rectL(x0 + ps, y0 + ps, x1 - x0 - ps * 2, y1 - y0 - ps * 2, h.accent || '#8c2f2f');
+  const tw = (word.length * 4 - 1) * ps, tx = Math.round(((x0 + x1) / 2 - tw / 2) / ps) * ps, ty = Math.round(((y0 + y1) / 2 - 2.5 * ps) / ps) * ps + ps;
+  [...word].forEach((ch, i) => {
+    const glyph = SIGN_FONT[ch];
+    if (!glyph) return;
+    glyph.forEach((row, ry) => { for (let rx = 0; rx < 3; rx++) if (row[rx] === '#') rectL(tx + (i * 4 + rx) * ps, ty + ry * ps, ps, ps, '#f7f4ea'); });
+    if (ch === 'É') rectL(tx + (i * 4 + 1) * ps, ty - 2 * ps, ps, ps, '#f7f4ea');   // the accent
+  });
 }
 
 function flatRoof(g) {
@@ -2982,9 +3155,10 @@ function drawProp(h, p) {
       break;
     case 'fence': {
       const z0 = z - p.hz, z1 = z + p.hz;
+      const fc = theme().paved ? '#2b2b35' : COLORS.fence;   // Plaza: wrought-iron railing
       if (!p.knocked) {
-        for (let zz = z0; zz <= z1; zz += 7) box3(x - 1, x + 1, zz - 1, zz + 1, 0, 13, COLORS.fence);
-        for (const hh of [4, 9]) poly3([[x, z0, hh], [x, z1, hh], [x, z1, hh + 2], [x, z0, hh + 2]], shade(COLORS.fence, 0.85));
+        for (let zz = z0; zz <= z1; zz += 7) box3(x - 1, x + 1, zz - 1, zz + 1, 0, 13, fc);
+        for (const hh of [4, 9]) poly3([[x, z0, hh], [x, z1, hh], [x, z1, hh + 2], [x, z0, hh + 2]], shade(fc, 0.85));
       } else {
         const out = sideX(h.side, p.lx - 14);
         poly3([[x, z0, 0], [x, z1, 0], [out, z1, 0], [out, z0, 0]], shade(COLORS.fence, 0.9));
@@ -2992,7 +3166,20 @@ function drawProp(h, p) {
       }
       break;
     }
-    default: {   // flamingo / gnome
+    default: {   // flamingo / gnome (Plaza: terracotta urns with flowers)
+      if (theme().paved) {
+        if (!p.knocked) {
+          drawSpriteC(SPR.shadowS, x + 1, y + 2);
+          box3(x - 4, x + 4, z - 4, z + 4, 0, 8, '#b8613f', '#8a4a30');
+          box3(x - 5, x + 5, z - 5, z + 5, 8, 10, '#c97a52');
+          fillPoly(ell3(x, z, 5, 4, 12, 8), '#3f8a3a');
+          for (let i = 0; i < 4; i++) pixelAt(x - 3 + i * 2, z - 1 + (i % 2) * 2, 13, ['#ff5a5f', '#ffd23f', '#f15bb5', '#ffffff'][(i + (p.type === 'gnome' ? 2 : 0)) % 4]);
+        } else {
+          box3(x - 6, x + 6, z - 3, z + 3, 0, 6, '#b8613f');
+          for (let i = 0; i < 4; i++) rectL(x + (i - 2) * 4, y - 2 + (i % 2) * 3, 2, 2, '#3f8a3a');
+        }
+        break;
+      }
       const spr = SPR[p.type];
       drawSpriteC(SPR.shadowS, x, y + 1);
       if (!p.knocked) drawSprite(spr, x, y);
@@ -3016,6 +3203,14 @@ function drawMailbox(h, t) {
     ringPixels(mx, mz, 18 + pulse * 4, 13 + pulse * 3);
     pix.globalAlpha = 1;
   }
+  if (theme().paved) {   // Plaza: a newspaper box on a short pedestal (same hit zone as a mailbox)
+    const col = h.sub ? COLORS.mailboxSub : '#2f5d4a';
+    box3(mx - 2, mx + 2, mz - 2, mz + 2, 0, 5, '#2b2b35');
+    box3(sideX(h.side, L.mailboxX - 4), sideX(h.side, L.mailboxX + 4), mz - 6, mz + 6, 5, 17, col, shade(col, 1.2));
+    poly3([[sideX(h.side, L.mailboxX + 4), mz - 4, 9], [sideX(h.side, L.mailboxX + 4), mz + 4, 9], [sideX(h.side, L.mailboxX + 4), mz + 4, 15], [sideX(h.side, L.mailboxX + 4), mz - 4, 15]], '#e8e2d0');   // window with papers
+    if (h.delivered) box3(sideX(h.side, L.mailboxX + 4), sideX(h.side, L.mailboxX + 6), mz - 2, mz + 3, 14, 25, COLORS.flag);
+    return;
+  }
   box3(mx - 1, mx + 1, mz - 1, mz + 1, 0, 11, COLORS.post);
   box3(sideX(h.side, L.mailboxX - 4), sideX(h.side, L.mailboxX + 4), mz - 6, mz + 6, 11, 18,
     h.sub ? COLORS.mailboxSub : COLORS.mailbox);
@@ -3026,18 +3221,33 @@ function drawMailbox(h, t) {
 // A Plaza building can have a corner tower: a brick bell tower with a clay
 // tile pyramid cap, or a stucco tower with a small glazed-tile dome. Drawn
 // from above so the tops show; the shadow is drawn with the ground.
-const SPIRE = { x0: 50, x1: 70, off: 8, len: 20, bell: 58, dome: 34 };   // near the street front so the top stays on screen
+const SPIRE = { x0: 50, x1: 70, off: 8, len: 20, bell: 58, dome: 34, point: 46 };   // near the street front so the top stays on screen
 function spireBox(g) {
   const za = g.z0 + SPIRE.off;
   return { x0: SPIRE.x0, x1: SPIRE.x1, za, zb: za + SPIRE.len, top: g.WH + SPIRE[g.h.spire] };
 }
 function drawSpireShadow(g) {
-  const s = spireBox(g), len = s.top * 0.3;
+  const s = spireBox(g), len = s.top * (theme().paved ? 0.7 : 0.3);   // late-day sun in the Plaza: long shadows
   g.q([[s.x0, s.za - len, 0], [s.x1, s.za - len, 0], [s.x1, s.zb, 0], [s.x0, s.zb, 0]], COLORS.shadow);
 }
 function drawSpire(g) {
   const { h, q, l3, box, quadZ } = g, s = spireBox(g), cx = (s.x0 + s.x1) / 2, cz = (s.za + s.zb) / 2;
   const dark = '#2a1d18';
+  if (h.spire === 'point') {   // stucco tower with a tall pointed tile roof
+    box(s.x0, s.x1, s.za, s.zb, 0, s.top, h.wall);
+    for (const v of [s.top - 16, s.top - 30]) {   // arched windows up the tower
+      quadZ(s.za, cx - 3, cx + 3, v, v + 9, dark);
+      q([[cx - 3, s.za, v + 9], [cx + 3, s.za, v + 9], [cx, s.za, v + 12]], dark);
+    }
+    box(s.x0 - 1, s.x1 + 1, s.za - 1, s.zb + 1, s.top, s.top + 2, shade(h.wall, 1.1));
+    const apex = s.top + 28, r0 = shade(h.roof, 0.8), r1 = h.roof, r2 = shade(h.roof, 1.18);
+    q([[s.x0 - 1, s.za - 1, s.top + 2], [s.x1 + 1, s.za - 1, s.top + 2], [cx, cz, apex]], r0);
+    q([[s.x1 + 1, s.za - 1, s.top + 2], [s.x1 + 1, s.zb + 1, s.top + 2], [cx, cz, apex]], r1);
+    q([[s.x0 - 1, s.zb + 1, s.top + 2], [s.x0 - 1, s.za - 1, s.top + 2], [cx, cz, apex]], r2);
+    for (let k = 1; k < 4; k++) l3([lerp(s.x0, cx, k / 4), lerp(s.za, cz, k / 4), lerp(s.top + 2, apex, k / 4)], [lerp(s.x1, cx, k / 4), lerp(s.za, cz, k / 4), lerp(s.top + 2, apex, k / 4)], shade(h.roof, 1.3));
+    l3([cx, cz, apex], [cx, cz, apex + 5], COLORS.perfect);
+    return;
+  }
   if (h.spire === 'bell') {
     box(s.x0, s.x1, s.za, s.zb, 0, s.top, COLORS.brick);
     for (let v = 8; v < s.top - 18; v += 7) l3([s.x0, s.za, v], [s.x1, s.za, v], shade(COLORS.brick, 0.78));
@@ -3093,16 +3303,43 @@ function drawGrandFountain(x, z, t, s) {
 }
 
 // Ornate iron lamp post with three globe lights.
-function drawLamp(d) {
-  const x = d.x, z = d.z, iron = '#2b2b35';
-  drawSpriteC(SPR.shadowS, x + 2, sy(z) + 2);
-  box3(x - 2, x + 2, z - 2, z + 2, 0, 4, iron);
-  box3(x - 1, x + 1, z - 1, z + 1, 4, 36, iron);
-  box3(x - 9, x + 9, z - 0.6, z + 0.6, 33, 34.5, iron);
-  for (const [gx, gh] of [[-9, 37], [0, 41], [9, 37]]) {
-    fillPoly(ell3(x + gx, z, 2.6, 2, gh, 8), '#fff4c2');
-    pixelAt(x + gx, z, gh + 1, '#ffffff');
+// Lamp head: five white globes on curled iron arms, with a soft glow (drawn once).
+SPR.lampHead = (() => {
+  const W = 17, H = 15, c = makeCanvas(W, H), g = c.getContext('2d');
+  const globes = [[3, 8], [13, 8], [8, 10], [5, 5], [11, 5], [8, 2]].slice(0, 5).concat([[8, 3]]).filter((v, i, a) => a.findIndex((o) => o[0] === v[0] && o[1] === v[1]) === i).slice(0, 5);
+  const px = (x, y, col, a = 1) => { g.globalAlpha = a; g.fillStyle = col; g.fillRect(x, y, 1, 1); };
+  for (const [gx, gy] of globes) for (let y = -3; y <= 3; y++) for (let x = -3; x <= 3; x++) if (x * x + y * y <= 10) px(gx + x, gy + y, '#fff3b0', 0.3);   // glow
+  for (const [gx, gy] of globes) {   // arms from the capital (8, 13)
+    const n = 8; for (let i = 0; i <= n; i++) px(Math.round(lerp(8, gx, i / n)), Math.round(lerp(13, gy + 1, i / n)), '#1f2128');
   }
+  for (const [gx, gy] of globes) {
+    for (let y = -2; y <= 2; y++) for (let x = -2; x <= 2; x++) { const d = x * x + y * y; if (d <= 5) px(gx + x, gy + y, d >= 3 ? '#3a3a44' : '#ffffff'); }
+    px(gx - 1, gy - 1, '#fffbe6');
+  }
+  g.globalAlpha = 1;
+  return c;
+})();
+function drawLamp(d) {   // ornate cast-iron post topped with a cluster of white globes
+  const x = d.x, z = d.z, iron = '#1f2128', ironHi = '#4a4d58';
+  poly3([[x - 2, z - 2, 0], [x + 2, z - 2, 0], [x + 2, z - 18, 0], [x - 2, z - 18, 0]], COLORS.shadow);   // long thin shadow
+  box3(x - 3, x + 3, z - 3, z + 3, 0, 4, iron, ironHi);               // base
+  box3(x - 1, x + 1, z - 1, z + 1, 4, 32, iron);                       // post
+  box3(x - 2, x + 2, z - 2, z + 2, 17, 19, iron, ironHi);             // collar
+  const [hx, hy] = proj(x, z, 32);
+  drawSprite(SPR.lampHead, hx, hy + 2 * CONFIG.pixelSize);
+}
+
+function drawPottedTree(d) {   // sidewalk tree in a terracotta pot (the only green in the Plaza)
+  const x = d.x, z = d.z;
+  drawSpriteC(SPR.shadowM, x + 3, sy(z) + 2);
+  box3(x - 5, x + 5, z - 5, z + 5, 0, 8, '#b8613f', '#5a3a24');
+  box3(x - 6, x + 6, z - 6, z + 6, 8, 10, '#c97a52', '#4a3020');
+  box3(x - 1, x + 1, z - 1, z + 1, 10, 18, '#6b4226');
+  const g = ['#2f6b2e', '#3f8a3a', '#5aa64a'];
+  fillPoly(ell3(x, z, 10, 8, 20, 12), g[0]);
+  fillPoly(ell3(x - 1, z + 1, 8, 6, 23, 12), g[1]);
+  fillPoly(ell3(x - 2, z + 2, 5, 4, 26, 10), g[2]);
+  if (d.seed % 3 === 0) for (let i = 0; i < 4; i++) pixelAt(x - 5 + i * 3, z - 1 + (i % 2) * 3, 24, '#f7f4ea');   // blossoms
 }
 
 // Terracotta planter full of flowers.
@@ -3131,6 +3368,7 @@ function drawDecor(d, t) {
     case 'grandFountain': drawGrandFountain(d.x, d.z, t, d.s); break;
     case 'lamp': drawLamp(d); break;
     case 'planter': drawPlanter(d); break;
+    case 'pottedTree': drawPottedTree(d); break;
     case 'patio': drawPatio(d); break;
     case 'jogside': {   // joggers running in place along the sidewalk
       drawSpriteC(SPR.shadowS, d.x, y + 1);
@@ -3320,6 +3558,10 @@ function drawObstacle(o, t) {
     case 'median': {
       const x0 = o.x - o.w / 2, x1 = o.x + o.w / 2;
       box3(x0, x1, o.z - o.h / 2, o.z + o.h / 2, 0, 3, COLORS.limestone, theme().ground.grass);
+      if (theme().paved) for (let i = 0; i < 18; i++) {   // flower bed
+        const fz = o.z - o.h / 2 + 5 + (i * 37 % (o.h - 10)), fx = x0 + 4 + (i * 13 % (o.w - 8));
+        pixelAt(fx, fz, 4, ['#ff5a5f', '#ffd23f', '#f15bb5', '#ffffff', '#9b5de5'][i % 5]);
+      }
       if (theme().plazas) drawGrandFountain(o.x, o.z, t, 0.75); else drawFountain(o.x, o.z, t, 0.9);
       break;
     }
@@ -3414,7 +3656,7 @@ function drawSubMarkers(t) {
   for (const h of game.houses) {
     if (!canDeliver(h) || h.passed) continue;
     const st = HOUSE_STYLES[h.style];
-    const top = h.wallH + (st.roof === 'flat' ? 6 : st.roofH);
+    const top = h.wallH + (st.roof === 'flat' || st.roof === 'terrace' ? 6 : st.roofH);
     const [mx, my] = proj(sideX(h.side, 66), h.z + h.len / 2, top + 16);
     if (my < -CONFIG.markerLookAhead || my > view.H + 10) continue;
     if (my < pinY) { if (!pinned[h.side] || h.z < pinned[h.side][0].z) pinned[h.side] = [h, mx]; continue; }
@@ -5360,8 +5602,8 @@ function applyRider() {
   const r = curRider();
   SPR.riderA = riderTopSprite(r, 0);
   SPR.riderB = riderTopSprite(r, 1);
-  SPR.riderBigA = outlined(scaleNN(SPR.riderA, CONFIG.playerScale));   // gameplay: bigger + 1px dark outline
-  SPR.riderBigB = outlined(scaleNN(SPR.riderB, CONFIG.playerScale));
+  SPR.riderBigA = outlined(scaleNN(SPR.riderA, CONFIG.PLAYER_SCALE));   // gameplay: bigger + 1px dark outline
+  SPR.riderBigB = outlined(scaleNN(SPR.riderB, CONFIG.PLAYER_SCALE));
 }
 applyRider();
 function noteFurthest() {   // called each new day
