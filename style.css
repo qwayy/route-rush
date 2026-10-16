@@ -31,6 +31,7 @@ canvas {
   display: block;
   touch-action: none;
 }
+#game { image-rendering: crisp-edges; image-rendering: pixelated; }   /* low-res canvas scaled up, pixels stay sharp */
 
 /* ---------- Overlay screens ---------- */
 .overlay {
@@ -323,3 +324,7 @@ h2 { font-size: 20px; font-weight: 400; text-transform: uppercase; color: var(--
 .paint-chip { width: 26px; height: 26px; border: 3px solid #1a1c2c; cursor: pointer; touch-action: manipulation; }
 .paint-chip.sel { outline: 3px solid var(--gold); }
 .unlock-pop canvas.bikepop { width: 44px; height: 28px; }
+
+/* ---------- Performance toast ---------- */
+.perf-toast { position: absolute; left: 0; right: 0; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); width: max-content; margin: 0 auto; z-index: 20; padding: 8px 12px; border: 3px solid #1a1c2c; background: #2a3346; color: var(--gold); font: 8px/1.4 "Press Start 2P", monospace; pointer-events: none; opacity: 0; transition: opacity 0.3s steps(3); }
+.perf-toast.show { opacity: 1; }

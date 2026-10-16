@@ -199,6 +199,12 @@ const CONFIG = {
   pedalStroke: 44,           // distance ridden per pedal tick
   pitchJitter: 0.07,         // +-7% random pitch on repeated sounds
   comboMaxSteps: 12,
+  maxParticles: 160,         // particle cap (none at all in low quality)
+  maxGroundPapers: 50,       // papers lying around
+  maxPops: 12,               // pop-up texts at once
+  maxVoices: 14,             // simultaneous sound effects
+  autoLowFps: 45,            // Graphics AUTO: below this fps...
+  autoLowAfter: 3,           // ...for this many seconds of riding -> low quality
   // Combo: deliveries in a row raise a points multiplier (everyone); a miss
   // or a broken subscriber window resets it.
   comboStep: 5,              // deliveries in a row per multiplier step
@@ -512,21 +518,26 @@ const COLORS = {
 // 3. SETUP
 // ---------------------------------------------------------------------
 const canvas = document.getElementById('game');
-const ctx = canvas.getContext('2d');
+let ctx = canvas.getContext('2d');   // swapped while redrawing the cached HUD
 
 // Low-res pixel buffer the world is drawn into (see RENDER).
 const buf = document.createElement('canvas');
-const pix = buf.getContext('2d');
+let pix = buf.getContext('2d');   // current draw target (swapped while baking offscreen caches)
+let renderEpoch = 1;   // bumped when the screen size changes: cached world images are rebuilt
+// Graphics quality: setting 'auto' | 'high' | 'low'; level is what's in effect.
+const gfx = { setting: 'auto', level: 'high', slowFor: 0, toastShown: false };
+function gfxHigh() { return gfx.level === 'high'; }
 const PAD = 8;   // spare art pixels around the buffer so screen shake never shows an edge
 
 const view = { W: CONFIG.gameWidth, H: 700, scale: 1, offX: 0, offY: 0, dpr: 1, bikeY: 500, safeTop: 0, camZ: 0 };
 
+// The screen canvas is a fixed low internal resolution (the game's logical
+// size, ~400 px wide) scaled up by CSS with crisp pixels. Pixel art doesn't
+// need devicePixelRatio, and this fills ~7x fewer pixels per frame on phones.
 function resize() {
   const cssW = window.innerWidth;
   const cssH = window.innerHeight;
-  view.dpr = Math.min(window.devicePixelRatio || 1, 2.5);
-  canvas.width = Math.round(cssW * view.dpr);
-  canvas.height = Math.round(cssH * view.dpr);
+  view.dpr = 1;
 
   view.W = CONFIG.gameWidth;
   const ps = CONFIG.pixelSize;
@@ -535,6 +546,11 @@ function resize() {
   view.offX = (cssW - view.W * view.scale) / 2;
   view.offY = (cssH - view.H * view.scale) / 2;
   view.bikeY = Math.round(view.H * CONFIG.bikeScreenY / ps) * ps;
+  canvas.width = view.W;
+  canvas.height = view.H;
+  renderEpoch++;   // cached world images depend on the screen size
+  Object.assign(canvas.style, { left: `${view.offX}px`, top: `${view.offY}px`, width: `${view.W * view.scale}px`, height: `${view.H * view.scale}px` });
+  ctx.imageSmoothingEnabled = false;
 
   buf.width = view.W / ps + PAD * 2;
   buf.height = view.H / ps + PAD * 2;
@@ -632,6 +648,9 @@ function setupDay() {
       perfect: false, lucky: false, bonusClean: false, added: 0, coins: 0, coinsDoubled: false,
     },
   });
+  for (const tile of groundTiles.values()) releaseCanvas(tile.c);
+  groundTiles.clear();   // new day: new neighborhood / layout
+  for (const h of game.houses || []) if (h._cache) releaseCanvas(h._cache.c);
   Object.assign(bike, { x: 200, vx: 0, spin: 0, crashed: false, airT: 0, h: 0, invuln: 0, wobble: 0, airMax: 0, airH: 0 });
   Object.assign(game, { powerups: [], power: null, shield: false, eBoost: 0 });
   if (hasModel('ebike')) { bike.invuln = CONFIG.eBikeStartTime; game.eBoost = CONFIG.eBikeStartTime; }
@@ -793,11 +812,11 @@ function tiltSteer() {
 // within tapMaxTime (then it's a tap and throws). Taps never steer.
 function toLogicalX(clientX) {
   const rect = canvas.getBoundingClientRect();
-  return (clientX - rect.left - view.offX) / view.scale;
+  return (clientX - rect.left) / view.scale;
 }
 function toLogicalY(clientY) {
   const rect = canvas.getBoundingClientRect();
-  return (clientY - rect.top - view.offY) / view.scale;
+  return (clientY - rect.top) / view.scale;
 }
 // Three quick taps on the score toggle the hit-area debug view (works on phones).
 function scoreTap() {
@@ -1006,7 +1025,9 @@ function lotOK(d, z, b) {   // decorations in a yard stay out of the buildings
   if (lx - b.rx > L.sidewalkX0 - 4) return true;   // on the sidewalk: buildings don't matter
   return !game.houses.some((h) => h.side === side && z + b.rz > h.z - 4 && z - b.rz < h.z + h.len + 4);
 }
+const OPTIONAL_DECOR = new Set(['planter', 'pottedTree', 'patio', 'bush', 'crowd', 'jogside', 'sidefence', 'tree']);
 function clearScoringZones() {
+  game.decor.forEach((d, i) => { d.optional = OPTIONAL_DECOR.has(d.type) && i % 2 === 1; });   // skipped in low quality
   const spots = scoringSpots();
   const blocked = (b) => spots.some((t) => propBlocks(b, t));
   game.decor = game.decor.filter((d) => {
@@ -1547,7 +1568,7 @@ function update(dt) {
 
   // Papers in flight
   for (const p of game.flying) updatePaper(p, dt);
-  game.flying = game.flying.filter((p) => !p.done);
+  compact(game.flying, (p) => !p.done);
 
   // Obstacles
   spawnPowerups(dt);
@@ -1710,22 +1731,34 @@ function updateFx(dt) {
     p.h = Math.max(0, p.h + p.vh * dt);
     p.life -= dt;
   }
-  game.particles = game.particles.filter((p) => p.life > 0);
+  compact(game.particles, (p) => (p.life > 0 ? true : (particlePool.length < 300 && particlePool.push(p), false)));
   for (const p of game.pops) { p.y -= 38 * dt; p.life -= dt; }
   if (game.trailFx) updateTrailFx(dt);
   game.coinBump = Math.max(0, (game.coinBump || 0) - dt);
-  game.pops = game.pops.filter((p) => p.life > 0);
-  if (game.trails) { for (const tr of game.trails) tr.life -= dt; game.trails = game.trails.filter((tr) => tr.life > 0); }
+  compact(game.pops, (p) => p.life > 0);
+  if (game.trails) { for (const tr of game.trails) tr.life -= dt; compact(game.trails, (tr) => tr.life > 0); }
 }
 
 // Houses are kept all day (only 20); everything else is dropped once behind.
+// Remove items (in place, no new arrays) for which keep() is false.
+function compact(arr, keep) {
+  let j = 0;
+  for (let i = 0; i < arr.length; i++) if (keep(arr[i])) arr[j++] = arr[i];
+  arr.length = j;
+  return arr;
+}
 function despawnBehind() {
   const limit = game.dist - (view.H - view.bikeY) - 120;
-  game.decor = game.decor.filter((d) => d.z > limit);
-  game.obstacles = game.obstacles.filter((o) => o.z + o.h > limit && (o.type === 'streetcar' || (o.x > -60 && o.x < view.W + 60)));
-  game.groundPapers = game.groundPapers.filter((p) => p.z > limit);
-  game.ramps = game.ramps.filter((r) => r.z + r.h > limit);
-  game.targets = game.targets.filter((t) => t.z > limit);
+  compact(game.decor, (d) => d.z > limit);
+  compact(game.obstacles, (o) => o.z + o.h > limit && (o.type === 'streetcar' || (o.x > -60 && o.x < view.W + 60)));
+  compact(game.groundPapers, (p) => p.z > limit);
+  compact(game.ramps, (r) => r.z + r.h > limit);
+  compact(game.targets, (t) => t.z > limit);
+  compact(game.houses, (h) => {   // long gone houses: drop them and recycle their cached images
+    if (h.z + h.len > limit - 200 || (h.sub && !h.delivered && !h.missed)) return true;
+    if (h._cache) releaseCanvas(h._cache.c);
+    return false;
+  });
 }
 
 // Debug mode only (triple-tap the score / H / ?debug=1): warn in the console
@@ -1811,6 +1844,10 @@ function updatePaper(p, dt) {
   p.rot += p.spin * dt;
   if (p.h > CONFIG.throwHeight) p.h = Math.max(CONFIG.throwHeight, p.h - 80 * dt);   // thrown mid-jump
   const dx = CONFIG.throwSpeed * (riderHas('quickArm') ? CONFIG.quickArmPaperSpeed : 1) * dt, dz = p.vz * dt;
+  if (!p.near || Math.abs(p.nearZ - p.z) > 30) {   // houses this paper could reach (refreshed if it drifts)
+    p.near = game.houses.filter((h) => h.side === p.side && p.z >= h.propZ0 - 90 && p.z <= h.propZ1 + 90);
+    p.nearZ = p.z;
+  }
   const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) / CONFIG.paperStep));
   for (let i = 0; i < steps; i++) {
     const a = [p.lx, p.z];
@@ -1819,13 +1856,13 @@ function updatePaper(p, dt) {
     const hit = paperHit(p, a);
     if (hit) {
       p.lx = hit.lx; p.z = hit.z;
-      p.trail.push([p.lx, p.z]);
+      if (debug.hitAreas) p.trail.push([p.lx, p.z]);
       applyPaperHit(p, hit);
       endPaper(p, hit.type);
       return;
     }
   }
-  p.trail.push([p.lx, p.z]);
+  if (debug.hitAreas) p.trail.push([p.lx, p.z]);
   if (p.lx < CONFIG.paperMinLx) endPaper(p, 'miss');   // flew off the edge of the screen
 }
 
@@ -1867,7 +1904,7 @@ function paperHit(p, a) {
   for (const t of game.targets) {
     if (t.side === p.side && !t.hit) { const [x0, x1, z0, z1] = targetBox(t); test(x0, x1, z0, z1, { type: 'target', t }); }
   }
-  for (const h of game.houses) {
+  for (const h of p.near || game.houses) {
     if (h.side !== p.side || p.z < h.propZ0 - 40 || p.z > h.propZ1 + 40) continue;
     if (h.filler) continue;   // Plaza decor buildings: papers aren't stopped by them
     if (h.scenery) { test(FAR, L.wallX, h.z, h.z + h.len, { type: 'thud', h }); continue; }
@@ -1933,6 +1970,7 @@ function applyPaperHit(p, hit) {
 
     case 'prop':   // non-subscriber yard stuff
       hit.pr.knocked = true;
+      h._cache = null;
       burst(x, z, hit.pr.type === 'trash' ? pick(COLORS.garbage) : COLORS.fence, 10, 120);
       s.props++;
       sfx.clatter();
@@ -2024,6 +2062,12 @@ function breakWindow(h, idx, x, z) {
 // across it (lx). Used by hit detection, window drawing and the debug
 // overlay so they always agree.
 function hitZones(h) {
+  const key = riderHas('sureShot') ? 2 : 1;   // the only thing that changes them
+  if (h._zn && h._znKey === key) return h._zn;
+  h._znKey = key;
+  return (h._zn = hitZonesRaw(h));
+}
+function hitZonesRaw(h) {
   const cz = h.z + h.len / 2;
   const porch = CONFIG.porchHitHalf + CONFIG.paperHalf;   // door/porch/steps (paper touching it counts)
   const winNear = porch + CONFIG.windowGap, winFar = Math.max(winNear + 12, h.len / 2 - 6);   // always two street-facing windows
@@ -2057,6 +2101,11 @@ function breakCombo(x, z) {
 // Non-subscriber windows are easy targets: the hit area is WINDOW_HITBOX_SCALE
 // times the drawn window (centred, kept off the porch and the house ends).
 function windowHitZones(h) {
+  if (h._wz && h._wzOf === hitZones(h)) return h._wz;
+  h._wzOf = hitZones(h);
+  return (h._wz = windowHitZonesRaw(h));
+}
+function windowHitZonesRaw(h) {
   const zn = hitZones(h), k = CONFIG.WINDOW_HITBOX_SCALE;
   return zn.windows.map(([lo, hi]) => {
     const len = (hi - lo) * k, before = (lo + hi) / 2 < zn.cz;
@@ -2080,7 +2129,10 @@ function nearestWindow(h, z) {
 
 function canDeliver(h) { return h.sub && !h.delivered; }
 function deliver(h) { h.delivered = true; game.stats.deliveries++; game.totalDelivered++; }
-function dropPaper(p, lx) { game.groundPapers.push({ x: sideX(p.side, lx), z: p.z, rot: p.rot }); }
+function dropPaper(p, lx) {
+  if (game.groundPapers.length >= CONFIG.maxGroundPapers) game.groundPapers.shift();   // oldest goes
+  game.groundPapers.push({ x: sideX(p.side, lx), z: p.z, rot: p.rot });
+}
 
 function bonusPts(n) { return riderHas('hustler') ? Math.round(n * CONFIG.hustlerBonus) : n; }   // Hustler
 
@@ -2094,19 +2146,23 @@ function addPoints(n) {   // returns what was actually added
 }
 
 // --- Effects ---
+const particlePool = [];
 function burst(x, z, color, n, speed) {
+  if (!gfxHigh()) return;   // low quality: no particles
+  n = Math.min(n, CONFIG.maxParticles - game.particles.length);
   for (let i = 0; i < n; i++) {
     const a = rand(0, Math.PI * 2), s = rand(0.3, 1) * speed;
     const life = rand(0.35, 0.7);
-    game.particles.push({
-      x, z, h: 4, vx: Math.cos(a) * s, vz: Math.sin(a) * s, vh: rand(60, 170),
-      life, max: life, color, size: rand(2, 4.5),
-    });
+    const p = particlePool.pop() || {};   // reuse dead particles: no garbage-collection hiccups
+    p.x = x; p.z = z; p.h = 4; p.vx = Math.cos(a) * s; p.vz = Math.sin(a) * s; p.vh = rand(60, 170);
+    p.life = life; p.max = life; p.color = color; p.size = rand(2, 4.5);
+    game.particles.push(p);
   }
 }
 
 // Pop text lives in screen space so it stays readable while the world scrolls.
 function popText(text, x, z, color, size) {
+  if (game.pops.length >= CONFIG.maxPops) game.pops.shift();
   game.pops.push({ text, x: clamp(x, 110, view.W - 110), y: sy(z), color, size, life: CONFIG.popLife, max: CONFIG.popLife });
 }
 
@@ -2472,6 +2528,72 @@ SPR.shadowTree = makeShadow(24, 7);
 function bx(x) { return x / CONFIG.pixelSize + PAD; }
 function by(y) { return y / CONFIG.pixelSize + PAD; }
 
+// ---------------------------------------------------------------------
+// Render caches. The projection only slides the world up/down as the camera
+// moves (x lean depends on x and height, not on the camera), so anything
+// static is drawn ONCE into an offscreen canvas and then blitted with a
+// single drawImage each frame: ground tiles, houses, lamps, planters, cars...
+// ---------------------------------------------------------------------
+// Draw `draw()` into a new canvas (full buffer width, `rows` tall) as if the camera were at camRef.
+// Offscreen canvases are pooled by size and reused (creating canvases is slow).
+const canvasPool = new Map();
+function getCanvas(w, h) {
+  const a = canvasPool.get(w * 4096 + h);
+  if (a && a.length) {
+    const c = a.pop(), g = c.getContext('2d');
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, w, h);
+    return c;
+  }
+  return makeCanvas(w, h);
+}
+function releaseCanvas(c) {
+  if (!c) return;
+  const k = c.width * 4096 + c.height;
+  let a = canvasPool.get(k);
+  if (!a) canvasPool.set(k, a = []);
+  if (a.length < 40) a.push(c);
+}
+// Only the columns between logical x xLo..xHi are kept (caches stay small).
+function renderOffscreen(rows, camRef, draw, xLo = -PAD * CONFIG.pixelSize, xHi = view.W + PAD * CONFIG.pixelSize) {
+  const ox = Math.max(0, Math.floor(bx(xLo))), w = Math.max(1, Math.min(buf.width, Math.ceil(bx(xHi))) - ox);
+  const c = getCanvas(w, rows), g = c.getContext('2d');
+  g.imageSmoothingEnabled = false;
+  g.translate(-ox, 0);
+  c.ox = ox;
+  const savePix = pix, saveCam = view.camZ;
+  pix = g; view.camZ = camRef;
+  try { draw(); } finally { pix = savePix; view.camZ = saveCam; }
+  return c;
+}
+// Camera position that puts world z = zLo on the bottom row of a `rows`-tall cache.
+function camFor(rows, zLo) {
+  const ps = CONFIG.pixelSize;
+  return Math.round(((rows - 2 - PAD) * ps - view.bikeY + zLo) / ps) * ps;
+}
+function cacheRows(zLo, zHi, hMax) { return Math.ceil((zHi - zLo + hMax * CONFIG.heightY) / CONFIG.pixelSize) + 4; }
+function blit(e, z = 0) {
+  const y = Math.round((view.camZ - e.camRef - z) / CONFIG.pixelSize);
+  if (y > buf.height || y + e.c.height < 0) return;   // off screen
+  pix.drawImage(e.c, e.c.ox, y);
+}
+// Shared cache for identical things (drawn anchored at world z = 0, blitted at z).
+const spriteCache = new Map();
+function cachedAt(key, zLo, zHi, hMax, z, draw, xLo, xHi) {
+  let e = spriteCache.get(key);
+  if (!e || e.epoch !== renderEpoch) {
+    const rows = cacheRows(zLo, zHi, hMax), camRef = camFor(rows, zLo);
+    e = { c: renderOffscreen(rows, camRef, draw, xLo, xHi), camRef, epoch: renderEpoch };
+    spriteCache.set(key, e);
+    if (spriteCache.size > 500) {   // oldest out (its canvas goes back to the pool)
+      const k0 = spriteCache.keys().next().value;
+      releaseCanvas(spriteCache.get(k0).c);
+      spriteCache.delete(k0);
+    }
+  }
+  blit(e, z);
+}
+
 // World point -> logical screen point [x, y].
 function proj(x, z, h) {
   return [x + (x - view.W / 2) * h * CONFIG.perspX, sy(z) - h * CONFIG.heightY];
@@ -2513,7 +2635,7 @@ function fillPoly(pts, color) {
     if (y < minY) minY = y;
     if (y > maxY) maxY = y;
   }
-  const y0 = Math.max(0, Math.round(minY)), y1 = Math.min(buf.height, Math.round(maxY));
+  const y0 = Math.max(0, Math.round(minY)), y1 = Math.min(pix.canvas.height, Math.round(maxY));
   if (y0 >= y1) return;
   pix.fillStyle = color;
   for (let y = y0; y < y1; y++) {
@@ -2575,18 +2697,41 @@ function ringPixels(x, z, rx, rz) {
 }
 
 // Sprite with its bottom-centre on logical point (x, y), optionally rotated.
+const ROT_STEPS = 48;
+const rotCache = new WeakMap();
+function rotated(img, rot) {   // img turned by rot (snapped to 1/48 turn), drawn once and kept
+  let m = rotCache.get(img);
+  if (!m) rotCache.set(img, m = new Map());
+  const k = ((Math.round(rot / (Math.PI * 2) * ROT_STEPS) % ROT_STEPS) + ROT_STEPS) % ROT_STEPS;
+  let c = m.get(k);
+  if (!c) {
+    const d = Math.ceil(Math.hypot(img.width, img.height)) + 2;
+    c = makeCanvas(d, d);
+    const g = c.getContext('2d');
+    g.imageSmoothingEnabled = false;
+    g.translate(d / 2, d / 2);
+    g.rotate(k / ROT_STEPS * Math.PI * 2);
+    g.drawImage(img, -(img.width >> 1), -(img.height >> 1));
+    m.set(k, c);
+  }
+  return c;
+}
 function drawSprite(img, x, y, rot) {
   const px = Math.round(bx(x)), py = Math.round(by(y));
   if (!rot) { pix.drawImage(img, px - (img.width >> 1), py - img.height); return; }
-  pix.save();
-  pix.translate(px, py - img.height / 2);
-  pix.rotate(rot);
-  pix.drawImage(img, -(img.width >> 1), -(img.height >> 1));
-  pix.restore();
+  const c = rotated(img, rot);
+  pix.drawImage(c, Math.round(px - c.width / 2), Math.round(py - img.height / 2 - c.height / 2));
 }
 function drawSpriteC(img, x, y, rot) { drawSprite(img, x, y + img.height * CONFIG.pixelSize / 2, rot); }
 
 
+const drawList = { items: [], n: 0 };
+function addDraw(k, fn, o) {
+  let e = drawList.items[drawList.n];
+  if (!e) drawList.items[drawList.n] = e = {};
+  e.k = k; e.fn = fn; e.o = o;
+  drawList.n++;
+}
 function render(now) {
   if (game.state === 'cutscene') { renderCutscene(now); return; }
   const t = now / 1000, ps = CONFIG.pixelSize;
@@ -2598,23 +2743,31 @@ function render(now) {
   for (const p of game.groundPapers) drawPaperAt(p.x, sy(p.z), p.rot);
   drawTrailFx(t);
 
-  // Painter's order: far things first so near things overlap them.
-  const items = [];
-  for (const h of game.houses) items.push([h.z, drawHouse, h]);
-  for (const d of game.decor) items.push([d.z, drawDecor, d]);
-  for (const o of game.obstacles) if (o.type !== 'pothole') items.push([o.z - o.h / 2, drawObstacle, o]);
-  for (const r of game.ramps) items.push([r.z - r.h / 2, drawRamp, r]);
-  for (const tr of game.tracks) items.push([tr.z - 12, drawCrossing, tr]);
-  items.push([game.dist - PLAYER.hl, drawBike, null]);
-  for (const pu of game.powerups) items.push([pu.z, drawPowerup, pu]);
-  items.sort((a, c) => c[0] - a[0]);
-  for (const [, fn, o] of items) fn(o, t);
+  // Painter's order: far things first so near things overlap them. Only what
+  // can be on screen goes in the list (entries are reused, no garbage).
+  const zNear = view.camZ - (view.H - view.bikeY) - 140, zFar = view.camZ + view.bikeY + 260;
+  drawList.n = 0;
+  for (const h of game.houses) if (h.z + h.len > zNear - 100 && h.z < zFar) addDraw(h.z, drawHouse, h);
+  for (const d of game.decor) if (d.z > zNear && d.z < zFar && (gfxHigh() || !d.optional)) addDraw(d.z, drawDecor, d);
+  for (const o of game.obstacles) if (o.type !== 'pothole' && o.z + o.h > zNear && o.z - o.h < zFar) addDraw(o.z - o.h / 2, drawObstacle, o);
+  for (const r of game.ramps) if (r.z > zNear && r.z < zFar) addDraw(r.z - r.h / 2, drawRamp, r);
+  for (const tr of game.tracks) if (tr.z > zNear && tr.z < zFar) addDraw(tr.z - 12, drawCrossing, tr);
+  addDraw(game.dist - PLAYER.hl, drawBike, null);
+  for (const pu of game.powerups) addDraw(pu.z, drawPowerup, pu);
+  const list = drawList.items, n = drawList.n;
+  for (let i = 1; i < n; i++) {   // insertion sort: the list is nearly sorted frame to frame
+    const e = list[i];
+    let j = i - 1;
+    while (j >= 0 && list[j].k < e.k) { list[j + 1] = list[j]; j--; }
+    list[j + 1] = e;
+  }
+  for (let i = 0; i < n; i++) list[i].fn(list[i].o, t);
 
   drawLights(t);
   drawSmoke();
   // Scoring layer: always on top of the world (only papers, particles, pop
   // text and the HUD go over it).
-  for (const tg of game.targets.slice().sort((a, c) => c.z - a.z)) drawTarget(tg, t);   // far to near
+  for (let i = game.targets.length - 1; i >= 0; i--) drawTarget(game.targets[i], t);   // far to near (targets are laid out near to far)
   for (const p of game.flying) drawFlyingPaper(p);
   drawTargetRings(t);
   drawSubMarkers(t);
@@ -2622,11 +2775,7 @@ function render(now) {
   if (debug.hitAreas) drawHitAreas();
 
   // --- Scale the buffer up to the screen ---
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = COLORS.bg;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  const s = view.scale * view.dpr;
-  ctx.setTransform(s, 0, 0, s, view.offX * view.dpr, view.offY * view.dpr);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);   // canvas is already logical size: no scaling here
   ctx.imageSmoothingEnabled = false;
   let shx = 0, shy = 0;
   if (game.shake > 0) {
@@ -2680,12 +2829,30 @@ function forEachWorldLine(period, fn) {
   for (let k = Math.floor(zMin / period); k <= Math.ceil(zMax / period); k++) fn(sy(k * period), k);
 }
 
+// Ground: drawn in cached horizontal tiles (TILE art rows each), once per day.
+const GROUND_TILE = 128;
+const groundTiles = new Map();
 function drawGround() {
+  const ps = CONFIG.pixelSize, span = GROUND_TILE * ps;
+  const zMin = view.camZ - (view.H - view.bikeY) - PAD * ps, zMax = view.camZ + view.bikeY + PAD * ps;
+  const k0 = Math.floor(zMin / span), k1 = Math.floor(zMax / span);
+  for (let k = k0; k <= k1; k++) {
+    let tile = groundTiles.get(k);
+    if (!tile || tile.epoch !== renderEpoch) {
+      const camRef = (k + 1) * span - view.bikeY - PAD * ps;   // tile row 0 = world z (k+1)*span
+      tile = { c: renderOffscreen(GROUND_TILE, camRef, drawGroundRaw), camRef, epoch: renderEpoch };
+      groundTiles.set(k, tile);
+    }
+    blit(tile);
+  }
+  for (const [k, tile] of groundTiles) if (k < k0 - 1 || k > k1 + 3) { releaseCanvas(tile.c); groundTiles.delete(k); }
+}
+function drawGroundRaw() {
   const G = theme().ground, th = theme();
   const ps = CONFIG.pixelSize, ext = PAD * ps;
   const top = -ext, tall = view.H + ext * 2;
   pix.fillStyle = th.paved ? G.paving : G.grass;
-  pix.fillRect(0, 0, buf.width, buf.height);
+  pix.fillRect(0, 0, pix.canvas.width, pix.canvas.height);
   if (th.paved) drawPaving(G, ext, top, tall);
   else {
 
@@ -2788,9 +2955,40 @@ function drawGround() {
 // Houses are described in left-side coordinates; X() mirrors them.
 function drawHouse(h, t) {
   const st = HOUSE_STYLES[h.style];
+  const rh = h.wallH + (st.roof === 'flat' || st.roof === 'terrace' ? 0 : st.roofH);
+  if (sy(h.z) < -20 || sy(h.z + h.len) - (rh + 40) * CONFIG.heightY > view.H + 20) return;
+  if (!h._cache || h._cache.epoch !== renderEpoch) bakeHouse(h);
+  blit(h._cache);
+  if (h.windows[0] || h.windows[1]) houseBrokenWindows(houseG(h, t));
+  if (h.flags) houseFlagWave(houseG(h, t));
+  if (!h.sub && !h.scenery) houseGlints(houseG(h, t));
+  if (!h.scenery) drawMailbox(h, t);
+}
+// Bake the static house once (again only if a yard prop gets knocked over).
+function bakeHouse(h) {
+  if (h._cache) releaseCanvas(h._cache.c);
+  const zLo = h.z - 16 - (h.spire ? (h.wallH + 70) * 0.7 : 0), zHi = h.z + h.len + 12;
+  const st = HOUSE_STYLES[h.style], WH = h.wallH, rh = WH + (st.roof === 'flat' || st.roof === 'terrace' ? 0 : st.roofH);
+  const hTop = Math.max(rh + 12, WH + 34, h.spire ? WH + SPIRE[h.spire] + 36 : 0, h.flags ? 50 : 0);   // tallest thing on it
+  const rows = Math.ceil(cacheRows(zLo, zHi, hTop) / 16) * 16, camRef = camFor(rows, zLo);
+  const xa = sideX(h.side, -PAD * CONFIG.pixelSize), xb = sideX(h.side, L.sidewalkX1 + 8);   // its own side of the street
+  h._cache = { c: renderOffscreen(rows, camRef, () => drawHouseStatic(h), Math.min(xa, xb), Math.max(xa, xb)), camRef, epoch: renderEpoch };
+}
+// Spare time at the end of a frame: bake the next house about to scroll in,
+// so it's ready before it's needed (at most one per frame).
+function bakeAhead() {
+  const zTop = view.camZ + view.bikeY, zMax = zTop + 520;
+  let best = null;
+  for (const h of game.houses) {
+    if (h.z > zTop - 60 && h.z < zMax && (!h._cache || h._cache.epoch !== renderEpoch) && (!best || h.z < best.z)) best = h;
+  }
+  if (best) bakeHouse(best);
+}
+function houseG(h, t, fresh) {
+  if (h._g && !fresh) { h._g.t = t; return h._g; }   // reuse: no per-frame allocations
+  const st = HOUSE_STYLES[h.style];
   const z0 = h.z, z1 = h.z + h.len, WH = h.wallH;
   const rh = WH + (st.roof === 'flat' || st.roof === 'terrace' ? 0 : st.roofH);
-  if (sy(z0) < -20 || sy(z1) - (rh + 40) * CONFIG.heightY > view.H + 20) return;
   const X = (x) => sideX(h.side, x);
   const q = (pts, col) => poly3(pts.map(([x, z, hh]) => [X(x), z, hh]), col);
   const g = {
@@ -2800,6 +2998,13 @@ function drawHouse(h, t) {
     quadZ: (z, xa, xb, ha, hb, col) => q([[xa, z, ha], [xb, z, ha], [xb, z, hb], [xa, z, hb]], col),   // camera-facing plane
     box: (xa, xb, za, zb, ha, hb, col, top) => box3(X(xa), X(xb), za, zb, ha, hb, col, top),
   };
+  if (!fresh) h._g = g;
+  return g;
+}
+// Everything about a house that doesn't move (baked into its cache).
+function drawHouseStatic(h) {
+  const g = houseG(h, 0, true), st = g.st;
+  g.baking = true;   // windows go in the cache unbroken
   houseGround(g);
   houseWalls(g);
   houseOpenings(g);
@@ -2809,7 +3014,6 @@ function drawHouse(h, t) {
   housePorch(g);
   if (h.flags) houseFlags(g);
   for (const p of h.props) drawProp(h, p);
-  if (!h.scenery) drawMailbox(h, t);
 }
 
 function houseGround(g) {
@@ -2904,22 +3108,14 @@ function houseOpenings(g) {
   const pane = shop ? 24 : st.roof === 'flat' ? 10 : 14;
   zones.forEach(([lo, hi], wi) => {
     quadX(wx, lo, hi, wh0 - 2, wh1 + 2, frame);
-    if (h.windows[wi]) {
+    if (h.windows[wi] && !g.baking) {
       quadX(wx, lo + 2, hi - 2, wh0, wh1, COLORS.windowBroken);
       l3([wx, lo + 4, wh1 - 2], [wx, (lo + hi) / 2, wh0 + 4], COLORS.crack);
       l3([wx, hi - 4, wh0 + 2], [wx, (lo + hi) / 2 + 4, wh1 - 3], COLORS.crack);
     } else {
       quadX(wx, lo + 2, hi - 2, wh0, wh1, COLORS.window);
       quadX(wx, lo + 2, hi - 2, wh1 - 4, wh1, COLORS.windowShine);
-      if (!h.sub && !h.scenery) {   // glint sweeping across: "this one's breakable"
-        const ph = (g.t * 0.9 + hash(h.seed, wi) * 3) % 1.6;
-        if (ph < 0.45) {
-          const zg = lerp(lo + 3, hi - 6, ph / 0.45);
-          l3([wx, zg, wh0 + 1], [wx, zg + 4, wh1 - 1], '#ffffff');
-          l3([wx, zg + 2, wh0 + 1], [wx, zg + 6, wh1 - 1], COLORS.windowShine);
-          if (ph < 0.18) { const [sx, sy0] = proj(g.X(wx), hi - 3, wh1 + 2), ps = CONFIG.pixelSize; rectL(sx - ps, sy0, ps * 3, ps, '#ffffff'); rectL(sx, sy0 - ps, ps, ps * 3, '#ffffff'); }
-        }
-      }
+
       for (let m = lo + pane; m < hi - 8; m += pane) quadX(wx, m, m + 2, wh0, wh1, frame);
       if (st.arches) {   // arched top on each pane (Moorish arcade look)
         for (let m = lo + 2; m < hi - 6; m += pane) {
@@ -2996,6 +3192,35 @@ function drawMural(g) {
     l3([nu + 4, z0, nv + 1], [nu + 4, z0, nv + 10], '#ffffff');
     l3([nu + 4, z0, nv + 10], [nu + 7, z0, nv + 7], '#ffffff');
   }
+}
+
+// Broken windows, drawn live over the cached house (no re-bake when one breaks).
+function houseBrokenWindows(g) {
+  const { h, st, l3, quadX, WH } = g, wx = L.wallX, shop = st.porch === 'stoop';
+  const frame = st.finish === 'tudor' || st.finish === 'stucco' ? h.trim : COLORS.trim;
+  const wh0 = shop ? 5 : 12, wh1 = shop ? Math.min(WH - 12, 22) : Math.min(WH - 8, 30);
+  hitZones(h).windows.forEach(([lo, hi], wi) => {
+    if (!h.windows[wi]) return;
+    quadX(wx, lo, hi, wh0 - 2, wh1 + 2, frame);
+    quadX(wx, lo + 2, hi - 2, wh0, wh1, COLORS.windowBroken);
+    l3([wx, lo + 4, wh1 - 2], [wx, (lo + hi) / 2, wh0 + 4], COLORS.crack);
+    l3([wx, hi - 4, wh0 + 2], [wx, (lo + hi) / 2 + 4, wh1 - 3], COLORS.crack);
+  });
+}
+
+// Glint sweeping across non-subscriber windows ("this one's breakable"), drawn live.
+function houseGlints(g) {
+  const { h, st, l3, WH } = g, wx = L.wallX, shop = st.porch === 'stoop';
+  const wh0 = shop ? 5 : 12, wh1 = shop ? Math.min(WH - 12, 22) : Math.min(WH - 8, 30);
+  hitZones(h).windows.forEach(([lo, hi], wi) => {
+    if (h.windows[wi]) return;
+    const ph = (g.t * 0.9 + hash(h.seed, wi) * 3) % 1.6;
+    if (ph >= 0.45) return;
+    const zg = lerp(lo + 3, hi - 6, ph / 0.45);
+    l3([wx, zg, wh0 + 1], [wx, zg + 4, wh1 - 1], '#ffffff');
+    l3([wx, zg + 2, wh0 + 1], [wx, zg + 6, wh1 - 1], COLORS.windowShine);
+    if (ph < 0.18) { const [sx, sy0] = proj(g.X(wx), hi - 3, wh1 + 2), ps = CONFIG.pixelSize; rectL(sx - ps, sy0, ps * 3, ps, '#ffffff'); rectL(sx, sy0 - ps, ps, ps * 3, '#ffffff'); }
+  });
 }
 
 function gableRoof(g) {
@@ -3176,6 +3401,9 @@ function houseFlags(g) {
   }
   const pz = cz + L.porchHalf + 10;
   box(97, 99, pz - 1, pz + 1, 0, 46, '#c9ccd2');
+}
+function houseFlagWave(g) {
+  const { q, cz, t } = g, pz = cz + L.porchHalf + 10;
   const wave = (i) => Math.sin(t * 6 + i) * 1.5;
   for (let i = 0; i < 4; i++) {
     const xa = 99 + i * 4, xb = xa + 4;
@@ -3237,9 +3465,14 @@ function drawProp(h, p) {
 
 function drawMailbox(h, t) {
   const mx = sideX(h.side, L.mailboxX), mz = h.mailZ;
-  const waiting = canDeliver(h);
-  if (waiting) {
-    const pulse = 0.5 + 0.5 * Math.sin(t * 6);
+  if (canDeliver(h)) {
+    const ph = Math.round((0.5 + 0.5 * Math.sin(t * 6)) * 4);
+    cachedAt(`halo|${mx}|${ph}`, -20, 20, 2, mz, () => mailboxHalo(mx, 0, ph / 4), mx - 28, mx + 28);
+  }
+  cachedAt(`mb|${mx}|${h.side}|${h.sub ? 1 : 0}|${h.delivered ? 1 : 0}|${theme().paved ? 1 : 0}`, -10, 10, 30, mz, () => mailboxBody(h, mx, 0), mx - 14, mx + 14);
+}
+function mailboxHalo(mx, mz, pulse) {
+  {
     pix.globalAlpha = 0.25 + pulse * 0.15;
     fillPoly(ellipsePts(mx, mz, 16, 11, 16), COLORS.perfect);
     pix.globalAlpha = 0.55;
@@ -3250,6 +3483,8 @@ function drawMailbox(h, t) {
     ringPixels(mx, mz, 18 + pulse * 4, 13 + pulse * 3);
     pix.globalAlpha = 1;
   }
+}
+function mailboxBody(h, mx, mz) {
   if (theme().paved) {   // Plaza: a newspaper box on a short pedestal (same hit zone as a mailbox)
     const col = h.sub ? COLORS.mailboxSub : '#2f5d4a';
     box3(mx - 2, mx + 2, mz - 2, mz + 2, 0, 5, '#2b2b35');
@@ -3322,31 +3557,50 @@ function drawSpire(g) {
 
 // Multi-tier ornate fountain: wide basin, two raised bowls, a bronze figure
 // on top, water spilling over each rim. s scales the whole thing.
-function drawGrandFountain(x, z, t, s) {
+// Grand fountain in layers: the stone and still water are cached, the moving
+// water is drawn live between them (same order as before), and skipped in
+// low quality.
+function grandFountainPart(x, z, t, s, part) {
   const stone = COLORS.limestone, H1 = 16 * s, H2 = 26 * s, H3 = 34 * s;
-  fillPoly(ell3(x, z - 4, 26 * s, 17 * s, 0, 18), COLORS.shadow);
-  fillPoly(ell3(x, z, 24 * s, 16 * s, 0, 18), shade(stone, 0.68));
-  fillPoly(ell3(x, z, 24 * s, 16 * s, 6, 18), stone);
-  fillPoly(ell3(x, z, 21 * s, 14 * s, 6, 18), COLORS.water);
-  for (let i = 0; i < 8; i++) {
-    const r = ((t * 9 + i * 4) % 20) * s, a = i * 0.8;
-    pixelAt(x + Math.cos(a) * r, z + Math.sin(a) * r * 0.65, 6, COLORS.waterLight);
-  }
-  box3(x - 3 * s, x + 3 * s, z - 3 * s, z + 3 * s, 6, H1, stone);
-  fillPoly(ell3(x, z, 12 * s, 8 * s, H1, 14), shade(stone, 0.85));
-  fillPoly(ell3(x, z, 10 * s, 6.5 * s, H1 + 1, 14), COLORS.water);
-  box3(x - 2 * s, x + 2 * s, z - 2 * s, z + 2 * s, H1, H2, stone);
-  fillPoly(ell3(x, z, 6 * s, 4 * s, H2, 12), shade(stone, 0.85));
-  fillPoly(ell3(x, z, 4.5 * s, 3 * s, H2 + 1, 12), COLORS.water);
-  for (const [r, top, bottom] of [[11 * s, H1, 6], [6 * s, H2, H1]]) {   // water spilling over the rims
-    for (let i = 0; i < 10; i++) {
-      const a = (i / 10) * Math.PI * 2, ph = (t * 1.6 + i * 0.37) % 1;
-      pixelAt(x + Math.cos(a) * r, z + Math.sin(a) * r * 0.66, lerp(top, bottom, ph), COLORS.waterLight);
+  if (part === 'lower') {
+    fillPoly(ell3(x, z - 4, 26 * s, 17 * s, 0, 18), COLORS.shadow);
+    fillPoly(ell3(x, z, 24 * s, 16 * s, 0, 18), shade(stone, 0.68));
+    fillPoly(ell3(x, z, 24 * s, 16 * s, 6, 18), stone);
+    fillPoly(ell3(x, z, 21 * s, 14 * s, 6, 18), COLORS.water);
+  } else if (part === 'ripples') {
+    for (let i = 0; i < 8; i++) {
+      const r = ((t * 9 + i * 4) % 20) * s, a = i * 0.8;
+      pixelAt(x + Math.cos(a) * r, z + Math.sin(a) * r * 0.65, 6, COLORS.waterLight);
     }
+  } else if (part === 'upper') {
+    box3(x - 3 * s, x + 3 * s, z - 3 * s, z + 3 * s, 6, H1, stone);
+    fillPoly(ell3(x, z, 12 * s, 8 * s, H1, 14), shade(stone, 0.85));
+    fillPoly(ell3(x, z, 10 * s, 6.5 * s, H1 + 1, 14), COLORS.water);
+    box3(x - 2 * s, x + 2 * s, z - 2 * s, z + 2 * s, H1, H2, stone);
+    fillPoly(ell3(x, z, 6 * s, 4 * s, H2, 12), shade(stone, 0.85));
+    fillPoly(ell3(x, z, 4.5 * s, 3 * s, H2 + 1, 12), COLORS.water);
+  } else if (part === 'spill') {
+    for (const [r, top, bottom] of [[11 * s, H1, 6], [6 * s, H2, H1]]) {   // water spilling over the rims
+      for (let i = 0; i < 10; i++) {
+        const a = (i / 10) * Math.PI * 2, ph = (t * 1.6 + i * 0.37) % 1;
+        pixelAt(x + Math.cos(a) * r, z + Math.sin(a) * r * 0.66, lerp(top, bottom, ph), COLORS.waterLight);
+      }
+    }
+  } else if (part === 'top') {
+    box3(x - 1.5 * s, x + 1.5 * s, z - s, z + s, H2, H3, COLORS.bronze);   // sculpture
+    pixelAt(x, z, H3 + 2 * s, shade(COLORS.bronze, 1.25));
+  } else if (part === 'spray') {
+    for (let k = 0; k < 4; k++) pixelAt(x + (k - 1.5) * 2, z, H3 + 4 * s + ((t * 18 + k * 5) % 6), '#ffffff');
   }
-  box3(x - 1.5 * s, x + 1.5 * s, z - s, z + s, H2, H3, COLORS.bronze);   // sculpture
-  pixelAt(x, z, H3 + 2 * s, shade(COLORS.bronze, 1.25));
-  for (let k = 0; k < 4; k++) pixelAt(x + (k - 1.5) * 2, z, H3 + 4 * s + ((t * 18 + k * 5) % 6), '#ffffff');
+}
+function drawGrandFountain(x, z, t, s) {
+  const key = `${x}|${s.toFixed(3)}`, anim = gfxHigh();
+  cachedAt('gfL|' + key, -6 - 17 * s - 2, 17 * s + 2, 10, z, () => grandFountainPart(x, 0, 0, s, 'lower'), x - 30 * s - 6, x + 30 * s + 6);
+  if (anim) grandFountainPart(x, z, t, s, 'ripples');
+  cachedAt('gfU|' + key, -8 * s - 3, 8 * s + 3, 28 * s + 4, z, () => grandFountainPart(x, 0, 0, s, 'upper'), x - 16 * s - 6, x + 16 * s + 6);
+  if (anim) grandFountainPart(x, z, t, s, 'spill');
+  grandFountainPart(x, z, t, s, 'top');
+  if (anim) grandFountainPart(x, z, t, s, 'spray');
 }
 
 // Ornate iron lamp post with three globe lights.
@@ -3403,20 +3657,26 @@ function drawDecor(d, t) {
   const y = sy(d.z);
   if (y < -20 || y - 90 > view.H) return;
   switch (d.type) {
-    case 'tree':
-      drawSpriteC(SPR.shadowTree, d.x + 4, y - 2);
-      drawSprite(SPR['tree_' + (d.pal || 'green')], d.x, y);
+    case 'tree': {
+      const spr = SPR['tree_' + (d.pal || 'green')];
+      cachedAt(`tree|${d.x}|${d.pal}`, -6, 4, spr.height * CONFIG.pixelSize / CONFIG.heightY + 8, d.z, () => {
+        const y0 = sy(0);
+        drawSpriteC(SPR.shadowTree, d.x + 4, y0 - 2);
+        drawSprite(spr, d.x, y0);
+      }, d.x - spr.width - 8, d.x + spr.width + 12);
       break;
+    }
     case 'fountain': drawFountain(d.x, d.z, t, 1); break;
     case 'smoker': drawSmoker(d.x, d.z, t); break;
     case 'grill': drawGrill(d.x, d.z, t); break;
     case 'crowd': drawCrowd(d, t); break;
-    case 'sidefence': drawSideFence(d); break;
+    case 'sidefence': cachedAt(`sf|${d.side}`, -4, 4, 16, d.z, () => drawSideFence({ ...d, z: 0 }), Math.min(sideX(d.side, 10), sideX(d.side, 100)), Math.max(sideX(d.side, 10), sideX(d.side, 100))); break;
     case 'grandFountain': drawGrandFountain(d.x, d.z, t, d.s); break;
-    case 'lamp': drawLamp(d); break;
-    case 'planter': drawPlanter(d); break;
-    case 'pottedTree': drawPottedTree(d); break;
-    case 'patio': drawPatio(d); break;
+    // (x snapped to the art-pixel grid, which drawing does anyway, so identical things share one image)
+    case 'lamp': cachedAt(`lamp|${d.x}`, -22, 8, 80, d.z, () => drawLamp({ x: d.x, z: 0 }), d.x - 26, d.x + 26); break;   // only two x positions
+    case 'planter': { const x = Math.round(d.x / 2) * 2; cachedAt(`pl|${x}|${d.seed % 5}`, -10, 10, 14, d.z, () => drawPlanter({ ...d, x, z: 0, seed: d.seed % 5 }), x - 12, x + 12); break; }
+    case 'pottedTree': { const x = Math.round(d.x / 2) * 2, b = d.seed % 3 === 0 ? 0 : 1; cachedAt(`pt|${x}|${b}`, -14, 14, 40, d.z, () => drawPottedTree({ ...d, x, z: 0, seed: b }), x - 22, x + 22); break; }
+    case 'patio': { const x = Math.round(d.x / 2) * 2; cachedAt(`pa|${x}|${d.seed % 4}`, -16, 16, 32, d.z, () => drawPatio({ ...d, x, z: 0, seed: d.seed % 4 }), x - 22, x + 22); break; }
     case 'jogside': {   // joggers running in place along the sidewalk
       drawSpriteC(SPR.shadowS, d.x, y + 1);
       drawSprite(Math.floor(t * 8 + d.phase) % 2 ? SPR.joggerB : SPR.joggerA, d.x, y - (Math.floor(t * 8 + d.phase) % 2) * CONFIG.pixelSize);
@@ -3442,24 +3702,36 @@ function pixelAt(x, z, h, color) {
 }
 
 // Stone basin, pedestal and animated jets.
-function drawFountain(x, z, t, s) {
-  fillPoly(ell3(x, z - 3, 17 * s, 11 * s, 0), COLORS.shadow);
-  fillPoly(ell3(x, z, 16 * s, 10 * s, 0), shade(COLORS.limestone, 0.7));
-  fillPoly(ell3(x, z, 16 * s, 10 * s, 5), COLORS.limestone);
-  fillPoly(ell3(x, z, 13 * s, 8 * s, 5), COLORS.water);
-  for (let i = 0; i < 6; i++) {
-    const r = ((t * 8 + i * 3) % 12) * s, a = i * 1.7;
-    pixelAt(x + Math.cos(a) * r, z + Math.sin(a) * r * 0.6, 5, COLORS.waterLight);
-  }
+function fountainPart(x, z, t, s, part) {
   const top = 14 * s + 2;
-  box3(x - 2 * s, x + 2 * s, z - 2 * s, z + 2 * s, 5, top, COLORS.limestone);
-  fillPoly(ell3(x, z, 5 * s, 3.5 * s, top), COLORS.water);
-  const N = 10;
-  for (let i = 0; i < N; i++) {
-    const ph = (t * 1.3 + i / N) % 1, a = (i / N) * Math.PI * 2, r = (3 + ph * 9) * s;
-    pixelAt(x + Math.cos(a) * r, z + Math.sin(a) * r * 0.7, top + Math.sin(Math.PI * ph) * 9 * s, COLORS.waterLight);
+  if (part === 'lower') {
+    fillPoly(ell3(x, z - 3, 17 * s, 11 * s, 0), COLORS.shadow);
+    fillPoly(ell3(x, z, 16 * s, 10 * s, 0), shade(COLORS.limestone, 0.7));
+    fillPoly(ell3(x, z, 16 * s, 10 * s, 5), COLORS.limestone);
+    fillPoly(ell3(x, z, 13 * s, 8 * s, 5), COLORS.water);
+  } else if (part === 'ripples') {
+    for (let i = 0; i < 6; i++) {
+      const r = ((t * 8 + i * 3) % 12) * s, a = i * 1.7;
+      pixelAt(x + Math.cos(a) * r, z + Math.sin(a) * r * 0.6, 5, COLORS.waterLight);
+    }
+  } else if (part === 'upper') {
+    box3(x - 2 * s, x + 2 * s, z - 2 * s, z + 2 * s, 5, top, COLORS.limestone);
+    fillPoly(ell3(x, z, 5 * s, 3.5 * s, top), COLORS.water);
+  } else if (part === 'spray') {
+    const N = 10;
+    for (let i = 0; i < N; i++) {
+      const ph = (t * 1.3 + i / N) % 1, a = (i / N) * Math.PI * 2, r = (3 + ph * 9) * s;
+      pixelAt(x + Math.cos(a) * r, z + Math.sin(a) * r * 0.7, top + Math.sin(Math.PI * ph) * 9 * s, COLORS.waterLight);
+    }
+    for (let k = 0; k < 3; k++) pixelAt(x, z, top + 2 + k * 3 + ((t * 20) % 3), '#ffffff');
   }
-  for (let k = 0; k < 3; k++) pixelAt(x, z, top + 2 + k * 3 + ((t * 20) % 3), '#ffffff');
+}
+function drawFountain(x, z, t, s) {
+  const key = `${x}|${s.toFixed(3)}`;
+  cachedAt('fL|' + key, -3 - 11 * s - 2, 11 * s + 2, 8, z, () => fountainPart(x, 0, 0, s, 'lower'), x - 20 * s - 6, x + 20 * s + 6);
+  if (gfxHigh()) fountainPart(x, z, t, s, 'ripples');
+  cachedAt('fU|' + key, -4 * s - 3, 4 * s + 3, 14 * s + 6, z, () => fountainPart(x, 0, 0, s, 'upper'), x - 8 * s - 6, x + 8 * s + 6);
+  if (gfxHigh()) fountainPart(x, z, t, s, 'spray');
 }
 
 function smokePuffs(x, z, h, t) {
@@ -3492,10 +3764,13 @@ function drawGrill(x, z, t) {
 }
 
 function drawCrowd(d, t) {
-  const ps = CONFIG.pixelSize, folks = [];
-  for (let i = 0; i < d.n; i++) folks.push({ i, ox: (hash(d.seed, i) - 0.5) * 30, oz: (hash(d.seed, i + 9) - 0.5) * 26 });
-  folks.sort((a, b) => b.oz - a.oz);
-  for (const f of folks) {
+  const ps = CONFIG.pixelSize;
+  if (!d.folks) {   // positions are fixed: work them out once
+    d.folks = [];
+    for (let i = 0; i < d.n; i++) d.folks.push({ i, ox: (hash(d.seed, i) - 0.5) * 30, oz: (hash(d.seed, i + 9) - 0.5) * 26 });
+    d.folks.sort((a, b) => b.oz - a.oz);
+  }
+  for (const f of d.folks) {
     const y = sy(d.z + f.oz);
     const jump = Math.floor(t * 4 + f.i * 1.7) % 3 === 0 ? ps * 2 : 0;   // cheering
     drawSpriteC(SPR.shadowS, d.x + f.ox, y + 1);
@@ -3554,6 +3829,7 @@ function drawSmoke() {
   pix.globalAlpha = 1;
 }
 
+function drawCarBody(o) { drawObstacle({ ...o, type: 'carBody' }, 0); }
 function drawObstacle(o, t) {
   const y = sy(o.z);
   if (y < -80 || y > view.H + 80) return;
@@ -3564,7 +3840,12 @@ function drawObstacle(o, t) {
       break;
     case 'traffic':
     case 'car': {
-      if (o.cross) { drawCrossCar(o); break; }
+      if (o.cross) { cachedAt(`xcar|${o.x}|${o.color}|${o.w}|${o.h}`, -o.h / 2 - 8, o.h / 2 + 2, 30, o.z, () => drawCrossCar({ ...o, z: 0 }), o.x - o.w / 2 - 8, o.x + o.w / 2 + 8); break; }
+      const cx = Math.round(o.x / 2) * 2;
+      cachedAt(`car|${cx}|${o.color}|${o.w}|${o.h}`, -o.h / 2 - 8, o.h / 2 + 2, 30, o.z, () => drawCarBody({ ...o, x: cx, z: 0 }), cx - o.w / 2 - 8, cx + o.w / 2 + 8);
+      break;
+    }
+    case 'carBody': {   // (only used by the cache above)
       const x0 = o.x - o.w / 2, x1 = o.x + o.w / 2, z0 = o.z - o.h / 2, z1 = o.z + o.h / 2;
       poly3([[x0 - 2, z0 - 6, 0], [x1 + 2, z0 - 6, 0], [x1 + 2, z1 - 6, 0], [x0 - 2, z1 - 6, 0]], COLORS.shadow);
       for (const zw of [z1 - 14, z0 + 12]) {
@@ -3604,11 +3885,13 @@ function drawObstacle(o, t) {
     }
     case 'median': {
       const x0 = o.x - o.w / 2, x1 = o.x + o.w / 2;
-      box3(x0, x1, o.z - o.h / 2, o.z + o.h / 2, 0, 3, COLORS.limestone, theme().ground.grass);
-      if (theme().paved) for (let i = 0; i < 18; i++) {   // flower bed
-        const fz = o.z - o.h / 2 + 5 + (i * 37 % (o.h - 10)), fx = x0 + 4 + (i * 13 % (o.w - 8));
-        pixelAt(fx, fz, 4, ['#ff5a5f', '#ffd23f', '#f15bb5', '#ffffff', '#9b5de5'][i % 5]);
-      }
+      cachedAt(`med|${o.x}|${o.w}|${o.h}|${theme().name}`, -o.h / 2 - 2, o.h / 2 + 2, 6, o.z, () => {
+        box3(x0, x1, -o.h / 2, o.h / 2, 0, 3, COLORS.limestone, theme().ground.grass);
+        if (theme().paved) for (let i = 0; i < 18; i++) {   // flower bed
+          const fz = -o.h / 2 + 5 + (i * 37 % (o.h - 10)), fx = x0 + 4 + (i * 13 % (o.w - 8));
+          pixelAt(fx, fz, 4, ['#ff5a5f', '#ffd23f', '#f15bb5', '#ffffff', '#9b5de5'][i % 5]);
+        }
+      }, x0 - 4, x1 + 4);
       if (theme().plazas) drawGrandFountain(o.x, o.z, t, 0.75); else drawFountain(o.x, o.z, t, 0.9);
       break;
     }
@@ -3853,20 +4136,31 @@ function drawHitAreas() {
 }
 
 // --- Screen-space overlays (full resolution) ---
+const popCache = new Map();
+function popImage(p) {
+  const key = `${p.size}|${p.color}|${p.text}`;
+  let c = popCache.get(key);
+  if (!c) {
+    const font = `${Math.round(p.size * 0.62)}px ${FONT}`;
+    ctx.font = font;
+    const w = Math.ceil(ctx.measureText(p.text).width) + 10, hgt = Math.ceil(p.size * 0.62 * 1.6) + 10;
+    c = makeCanvas(w, hgt);
+    const g = c.getContext('2d');
+    g.font = font; g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
+    g.lineWidth = 4; g.strokeStyle = PAL.k; g.strokeText(p.text, w / 2, hgt / 2);
+    g.fillStyle = p.color; g.fillText(p.text, w / 2, hgt / 2);
+    popCache.set(key, c);
+    if (popCache.size > 200) popCache.delete(popCache.keys().next().value);
+  }
+  return c;
+}
 function drawPops() {
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.lineJoin = 'round';
   for (const p of game.pops) {
     const k = p.life / p.max;
     const scale = k > 0.85 ? 1 + (k - 0.85) * 3 : 1;   // little pop on spawn
+    const img = popImage(p), w = img.width * scale, hgt = img.height * scale;
     ctx.globalAlpha = clamp(k * 1.6, 0, 1);
-    ctx.font = `${Math.round(p.size * 0.62 * scale)}px ${FONT}`;
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = PAL.k;
-    ctx.strokeText(p.text, p.x, p.y);
-    ctx.fillStyle = p.color;
-    ctx.fillText(p.text, p.x, p.y);
+    ctx.drawImage(img, Math.round(p.x - w / 2), Math.round(p.y - hgt / 2), Math.round(w), Math.round(hgt));
   }
   ctx.globalAlpha = 1;
 }
@@ -3881,30 +4175,74 @@ function drawFlash() {
   ctx.restore();
 }
 
+const textCache = new Map();
 function textShadowed(text, x, y, color) {
-  ctx.fillStyle = PAL.k;
-  ctx.fillText(text, x + 2, y + 2);
-  ctx.fillStyle = color;
-  ctx.fillText(text, x, y);
+  const font = ctx.font, base = ctx.textBaseline, key = `${font}|${base}|${color}|${text}`;
+  let e = textCache.get(key);
+  if (!e) {
+    const size = parseFloat((/(\d+(?:\.\d+)?)px/.exec(font) || [0, 10])[1]);
+    const w = ctx.measureText(text).width, hgt = Math.ceil(size * 1.6) + 6;
+    const oy = base === 'top' ? 2 : base === 'middle' ? Math.round(hgt / 2) - 1 : base === 'bottom' ? hgt - 4 : Math.ceil(size * 1.2) + 2;
+    const c = makeCanvas(Math.ceil(w) + 4, hgt), g = c.getContext('2d');
+    g.font = font; g.textBaseline = base; g.textAlign = 'left';
+    g.fillStyle = PAL.k; g.fillText(text, 2, oy + 2);
+    g.fillStyle = color; g.fillText(text, 0, oy);
+    e = { c, w, oy };
+    textCache.set(key, e);
+    if (textCache.size > 400) textCache.delete(textCache.keys().next().value);
+  }
+  const al = ctx.textAlign, ax = al === 'center' ? e.w / 2 : al === 'right' || al === 'end' ? e.w : 0;
+  ctx.drawImage(e.c, Math.round(x - ax), Math.round(y - e.oy));
+  return e.w;
 }
 
+const hudFade = { c: null, h: 0, w: 0 };
+const hudCache = { c: null, key: '' };
 function drawHUD() {
-  const top = view.safeTop;
-  const fade = ctx.createLinearGradient(0, 0, 0, top + 84);   // subtle dark fade so the score reads over the street
-  fade.addColorStop(0, 'rgba(10,12,22,0.62)');
-  fade.addColorStop(0.6, 'rgba(10,12,22,0.3)');
-  fade.addColorStop(1, 'rgba(10,12,22,0)');
-  ctx.fillStyle = fade;
-  ctx.fillRect(0, 0, view.W, top + 84);
+  const top = view.safeTop, st = game.stats;
+  const key = `${view.W}|${top}|${game.score}|${wallet}|${game.coinBump > 0}|${game.week}|${game.day}|${st.deliveries}|${st.subs}|${game.phase !== 'route'}|${comboMult()}|${curRider().skill}|${game.secondWind > 0}|${shop.equipped.bike}|${bikeModel()}|${debug.hitAreas}|${debug.warnings}|${game.lives}`;
+  if (key !== hudCache.key) {   // redraw the HUD image only when something on it changed
+    const hgt = Math.ceil(top + 100);
+    if (!hudCache.c || hudCache.c.width !== view.W || hudCache.c.height !== hgt) hudCache.c = makeCanvas(view.W, hgt);
+    const real = ctx;
+    ctx = hudCache.c.getContext('2d');
+    ctx.clearRect(0, 0, view.W, hgt);
+    try { drawHUDStatic(top); } finally { ctx = real; }
+    hudCache.key = key;
+  }
+  ctx.drawImage(hudCache.c, 0, 0);
+  drawPowerHUD(top);   // countdown bar: live
+  if (debug.hitAreas) {
+    ctx.textAlign = 'center';
+    ctx.font = `8px ${FONT}`;
+    textShadowed(perfLabel(), view.W / 2, top + 90, perf.fps < 45 ? COLORS.bad : COLORS.good);   // frame meter
+    ctx.textAlign = 'left';
+    const keyCols = [['MAILBOX', COLORS.perfect], ['PORCH', COLORS.good], ['PROPERTY', COLORS.debugProperty], ['SUB WIN', COLORS.bad], ['WINDOW', COLORS.glass], ['TARGET', '#ffffff']];
+    let kx = 8;
+    for (const [label, col] of keyCols) kx += textShadowed(label, kx, view.H - 10, col) + 12;
+  }
+}
+function drawHUDStatic(top) {
+  const fh = Math.ceil(top + 84);
+  if (!hudFade.c || hudFade.h !== fh || hudFade.w !== view.W) {   // subtle dark fade so the score reads over the street (built once)
+    const c = makeCanvas(view.W, fh), g = c.getContext('2d'), fade = g.createLinearGradient(0, 0, 0, fh);
+    fade.addColorStop(0, 'rgba(10,12,22,0.62)');
+    fade.addColorStop(0.6, 'rgba(10,12,22,0.3)');
+    fade.addColorStop(1, 'rgba(10,12,22,0)');
+    g.fillStyle = fade; g.fillRect(0, 0, view.W, fh);
+    Object.assign(hudFade, { c, h: fh, w: view.W });
+  }
+  ctx.drawImage(hudFade.c, 0, 0);
 
   ctx.textBaseline = 'alphabetic';
   ctx.textAlign = 'left';
   ctx.font = `20px ${FONT}`;
-  textShadowed(String(game.score), 12, top + 32, '#fff');
-  const cx = 12 + ctx.measureText(String(game.score)).width + 12, cs3 = 3 + (game.coinBump > 0 ? 1 : 0);   // coins, small, next to the score
+  const sw = textShadowed(String(game.score), 12, top + 32, '#fff');
+  const cx = 12 + sw + 12, cs3 = 3 + (game.coinBump > 0 ? 1 : 0);   // coins, small, next to the score
   ctx.drawImage(SPR.coin, cx, top + 30 - 5 * cs3 + (cs3 > 3 ? 1 : 0), 5 * cs3, 5 * cs3);
   ctx.font = `10px ${FONT}`;
-  textShadowed(wallet.toLocaleString('en-US'), cx + 5 * cs3 + 5, top + 30, COLORS.perfect);
+  if (hudFade.walletN !== wallet) { hudFade.walletN = wallet; hudFade.walletS = wallet.toLocaleString('en-US'); }   // format only when it changes
+  textShadowed(hudFade.walletS, cx + 5 * cs3 + 5, top + 30, COLORS.perfect);
   ctx.font = `20px ${FONT}`;
   ctx.font = `8px ${FONT}`;
   const s = game.stats;
@@ -3916,17 +4254,13 @@ function drawHUD() {
     textShadowed('BONUS', view.W / 2, top + 30, COLORS.good);
   }
   if (comboMult() > 1) textShadowed(`COMBO x${comboMult().toFixed(1)}`, 12, top + 66, COLORS.perfect);
-  drawPowerHUD(top);
   drawSkillHUD(top);
 
-  if (debug.hitAreas) {   // label + color key
+  if (debug.hitAreas) {   // label
     ctx.textAlign = 'center';
     ctx.font = `8px ${FONT}`;
     textShadowed(`DEBUG: TRIPLE-TAP SCORE · WARN ${debug.warnings}`, view.W / 2, top + 76, debug.warnings ? COLORS.bad : COLORS.good);
     ctx.textAlign = 'left';
-    const key = [['MAILBOX', COLORS.perfect], ['PORCH', COLORS.good], ['PROPERTY', COLORS.debugProperty], ['SUB WIN', COLORS.bad], ['WINDOW', COLORS.glass], ['TARGET', '#ffffff']];
-    let kx = 8;
-    for (const [label, col] of key) { textShadowed(label, kx, view.H - 10, col); kx += ctx.measureText(label).width + 12; }
   }
 
   // Lives (hidden when one crash ends the run)
@@ -4309,8 +4643,17 @@ function claim(name, max, dur) {
   return true;
 }
 // One enveloped oscillator note. o: { f, f2 (glide to), type, dur, vol, at (delay) | t0 (absolute), bus }
+// Sound-effect voice cap (music isn't counted).
+function voice(o, d) {
+  if (o.bus && o.bus !== audio.sfxBus) return true;
+  if ((audio.sfxLive || 0) >= CONFIG.maxVoices) return false;
+  audio.sfxLive = (audio.sfxLive || 0) + 1;
+  setTimeout(() => { audio.sfxLive--; }, ((o.at || 0) + d) * 1000 + 50);
+  return true;
+}
 function tone(o) {
   const ctx = audio.ctx, t = o.t0 != null ? o.t0 : ctx.currentTime + (o.at || 0), d = o.dur;
+  if (!voice(o, d)) return;
   const osc = ctx.createOscillator(), g = ctx.createGain();
   osc.type = o.type || 'square';
   osc.frequency.setValueAtTime(o.f, t);
@@ -4326,6 +4669,7 @@ function tone(o) {
 // Filtered noise burst. o: { f, f2, filter, q, dur, vol, at | t0, bus }
 function noise(o) {
   const ctx = audio.ctx, t = o.t0 != null ? o.t0 : ctx.currentTime + (o.at || 0), d = o.dur;
+  if (!voice(o, d)) return;
   const src = ctx.createBufferSource(), flt = ctx.createBiquadFilter(), g = ctx.createGain();
   src.buffer = audio.noise;
   src.loop = true;
@@ -4781,6 +5125,7 @@ function drawPaperAt(x, y, rot) {
 
 // --- Trails behind the bike ---
 function spawnTrail(dt) {
+  if (!gfxHigh()) return;   // low quality: no trails
   const tr = equippedTrail();
   if (!tr.colors || bike.crashed) return;
   game.trailAcc = (game.trailAcc || 0) + dt * CONFIG.trailRate;
@@ -4803,7 +5148,7 @@ function updateTrailFx(dt) {
     p.h = Math.max(0, p.h + p.vh * dt);
     p.life -= dt;
   }
-  game.trailFx = game.trailFx.filter((p) => p.life > 0);
+  compact(game.trailFx, (p) => p.life > 0);
 }
 function drawTrailFx(t) {
   for (const p of game.trailFx) {
@@ -5230,7 +5575,7 @@ function collectPowerups() {
     burst(p.x, p.z, POWER_COLORS[p.type], 14, 140);
     popText(POWER_NAMES[p.type] + '!', p.x, p.z + 40, POWER_COLORS[p.type], 20);
   }
-  game.powerups = game.powerups.filter((p) => !p.taken && p.z > game.dist - view.H);
+  compact(game.powerups, (p) => !p.taken && p.z > game.dist - view.H);
 }
 function drawPowerup(p, t) {   // floating pickup (drawn in depth order with the world)
   {
@@ -5996,11 +6341,7 @@ function renderCutscene(now) {
   ({ office: sceneOffice, stage: sceneStage, party: sceneParty })[cs.script.scene](t, st, AW, SH);
   cr(0, SH, AW, AH - SH, '#10141f');
 
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = COLORS.bg;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  const s = view.scale * view.dpr;
-  ctx.setTransform(s, 0, 0, s, view.offX * view.dpr, view.offY * view.dpr);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);   // canvas is already logical size: no scaling here
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(buf, PAD, PAD, view.W / ps, view.H / ps, 0, 0, view.W, view.H);
 
@@ -6250,15 +6591,74 @@ function requestRun() {
 
 
 // ---------------------------------------------------------------------
+// 9f. PERFORMANCE: frame meter, automatic low quality, Graphics setting
+// ---------------------------------------------------------------------
+const GFX_KEY = 'routeRush.graphics';
+const GFX_LABEL = { auto: '🖥 AUTO', high: '🖥 HIGH', low: '🖥 LOW' };
+gfx.setting = ['auto', 'high', 'low'].includes(storage.get(GFX_KEY, 'auto')) ? storage.get(GFX_KEY, 'auto') : 'auto';
+gfx.level = gfx.setting === 'low' ? 'low' : 'high';
+const perf = { fps: 60, upd: 0, ren: 0, label: '', nextLabel: 0 };
+function perfMeter(real, upd, ren) {
+  if (real > 0 && real < 1) perf.fps += (1 / real - perf.fps) * 0.1;
+  perf.upd += (upd - perf.upd) * 0.1;
+  perf.ren += (ren - perf.ren) * 0.1;
+  // AUTO: if riding stays under autoLowFps for autoLowAfter seconds, drop to low quality (once).
+  if (gfx.setting === 'auto' && gfx.level === 'high' && game.state === 'playing' && real < 0.5) {
+    gfx.slowFor = perf.fps < CONFIG.autoLowFps ? gfx.slowFor + real : 0;
+    if (gfx.slowFor > CONFIG.autoLowAfter) setGfxLevel('low', true);
+  }
+}
+function setGfxLevel(level, auto) {
+  gfx.level = level;
+  gfx.slowFor = 0;
+  if (level === 'low') { game.particles.length = 0; if (game.trailFx) game.trailFx.length = 0; }
+  if (auto && !gfx.toastShown) { gfx.toastShown = true; showToast('Performance mode on'); }
+}
+function showToast(text) {
+  let el = document.getElementById('perf-toast');
+  if (!el) { el = document.createElement('div'); el.id = 'perf-toast'; el.className = 'perf-toast'; document.body.appendChild(el); }
+  el.textContent = text;
+  el.classList.add('show');
+  clearTimeout(showToast.timer);
+  showToast.timer = setTimeout(() => el.classList.remove('show'), 2600);
+}
+function updateGfxUI() { document.querySelectorAll('.set-gfx').forEach((b) => { b.textContent = GFX_LABEL[gfx.setting]; }); }
+document.querySelectorAll('.set-gfx').forEach((b) => b.addEventListener('click', (e) => {
+  e.stopPropagation();
+  sfx.click();
+  gfx.setting = { auto: 'high', high: 'low', low: 'auto' }[gfx.setting];
+  storage.set(GFX_KEY, gfx.setting);
+  setGfxLevel(gfx.setting === 'low' ? 'low' : 'high', false);
+  updateGfxUI();
+}));
+updateGfxUI();
+// Debug overlay readout (refreshed 4x a second so the text cache stays small).
+function perfLabel() {
+  const now = performance.now();
+  if (now > perf.nextLabel) {
+    perf.nextLabel = now + 250;
+    perf.label = `FPS ${Math.round(perf.fps)}  UPD ${perf.upd.toFixed(1)}ms  REN ${perf.ren.toFixed(1)}ms  ${gfx.level.toUpperCase()}`;
+  }
+  return perf.label;
+}
+
+// ---------------------------------------------------------------------
 // 10. LOOP
 // ---------------------------------------------------------------------
 let lastTime = performance.now();
 
 function frame(now) {
-  const dt = Math.min(0.05, Math.max(0, (now - lastTime) / 1000));   // clamp after tab switches
+  const real = Math.max(0, (now - lastTime) / 1000);
   lastTime = now;
-  update(dt);
+  // Simulate in steps of at most 1/30 s: a slow frame runs extra steps instead
+  // of slowing the game down (capped at 0.25 s after tab switches).
+  let left = Math.min(0.25, real);
+  const t0 = performance.now();
+  while (left > 1e-6) { const step = Math.min(1 / 30, left); update(step); left -= step; }
+  const t1 = performance.now();
   render(now);
+  perfMeter(real, t1 - t0, performance.now() - t1);
+  if (game.state === 'playing' && performance.now() - t0 < 9) bakeAhead();
   updatePedalSound(game.state === 'playing' && bike.airT <= 0 && !bike.crashed);
   const hidePause = game.state !== 'playing';
   if (ui.pauseBtn.hidden !== hidePause) ui.pauseBtn.hidden = hidePause;
