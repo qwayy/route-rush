@@ -792,13 +792,26 @@ function listenForTilt() {
 }
 // iPhone only lets a page read motion after the player taps "enable".
 async function requestTilt() {
+  if (tilt.asking) return;
+  tilt.asking = true;
   try {
     if ((await DeviceOrientationEvent.requestPermission()) === 'granted') listenForTilt();
     else tilt.denied = true;
   } catch (e) { tilt.denied = true; }
+  tilt.asking = false;
   updateSteerUI();
 }
 function tiltActive() { return tilt.enabled && performance.now() - tilt.last < 1000; }
+// Phones steer by tilt. Browsers without a permission step start listening
+// right away; the others (iPhone, recent Chrome) ask on the first tap
+// anywhere: iPhone shows its motion prompt, Chrome just says yes.
+function tiltOnFirstTap() {
+  if (!isTouchDevice || tilt.listening || tilt.denied || !window.isSecureContext) return;
+  if (tilt.needsPermission) requestTilt(); else listenForTilt();
+}
+if (!tilt.needsPermission && window.isSecureContext) listenForTilt();
+document.addEventListener('click', tiltOnFirstTap, true);
+document.addEventListener('touchend', tiltOnFirstTap, true);
 function calibrateTilt() { tilt.base = tilt.smooth = tilt.raw; }
 // Sideways steering speed from tilt: dead zone, then a gentle-to-hard curve up
 // to full steering at tiltFullAngle (scaled by the sensitivity slider).
@@ -6667,6 +6680,7 @@ const tutUI = { skip: document.getElementById('tut-skip') };
 function needsTutorial() { return !progress.tutorialDone && !progress.furthest && !best; }
 function startTutorial() {
   if (audio.settings.music !== 'off') startMusic();   // still inside the tap that got us here
+  if (isTouchDevice && tilt.needsPermission && !tilt.listening && !tilt.denied && window.isSecureContext) requestTilt();   // iPhone: ask for motion now, the first step is tilting
   resetGame();
   game.day = 0; game.week = 1;
   setupDay();
@@ -6758,7 +6772,7 @@ function drawTutorial(t) {
   if (!T || !T.frozen || game.state !== 'playing') return;
   const step = TUT_STEPS[T.step], touch = isTouchDevice;
   const text = {
-    steer: tiltActive() ? 'Tilt your phone to steer' : touch ? 'Drag your finger left and right to steer' : 'Use the arrow keys to steer',
+    steer: touch ? 'Tilt your phone to steer' : 'Drag with the mouse to steer',
     left: touch ? 'Tap the LEFT side to throw left' : 'Press A to throw left',
     right: touch ? 'Tap the RIGHT side to throw right' : 'Press D to throw right',
     mailbox: 'Hit the porch for points, hit the MAILBOX for big points!',
@@ -6766,7 +6780,7 @@ function drawTutorial(t) {
     ready: "Don't crash! Ready?",
   }[step];
   const sub = {
-    steer: `${T.minX < 178 ? '✓' : '·'} left   ${T.maxX > 222 ? '✓' : '·'} right`,
+    steer: `${T.minX < 178 ? '✓' : '·'} left   ${T.maxX > 222 ? '✓' : '·'} right   ${touch ? (tiltActive() ? '' : '(or drag your finger)') : '(or use the arrow keys)'}`.trim(),
     left: 'Throw at the house with the marker',
     right: 'Throw at the house with the marker',
     mailbox: 'Throw now: you are right beside it',
