@@ -16,6 +16,7 @@
 <body>
   <canvas id="game"></canvas>
   <button id="pause-btn" class="pause-btn" type="button" aria-label="Pause" hidden>II</button>
+  <button id="tut-skip" class="tut-skip" type="button" hidden>SKIP TUTORIAL ▸</button>
 
   <div id="overlay" class="overlay">
     <section id="screen-title" class="panel">
@@ -46,6 +47,7 @@
       <div class="tilt-row"><span>TILT</span><input class="set-tilt" type="range" min="1" max="10" step="1" value="5" aria-label="Tilt sensitivity"><b class="tilt-val">5</b></div>
       <button class="restore-btn link-btn" type="button">RESTORE PURCHASES</button>
       <p class="restore-msg keys"></p>
+      <button class="tut-replay link-btn" type="button">REPLAY TUTORIAL</button>
       <p class="cta">Tap to start</p>
       <p class="keys">Desktop: <span class="sys">← →</span> steer · A/D throw · Space starts · P pause · M music</p>
     </section>
@@ -66,6 +68,7 @@
         <button id="newrun-btn" class="share alt" type="button">NEW RUN</button>
       </div>
       <button id="share-btn" class="share small" type="button">Share</button>
+      <button class="fb-open link-btn" type="button">FEEDBACK</button>
       <p id="toast" class="toast"></p>
       <p class="keys">Desktop: R retry day · N new run</p>
     </section>
@@ -90,6 +93,7 @@
           </div>
           <button id="pause-quit" class="share alt" type="button">MAIN MENU</button>
         </div>
+        <button class="fb-open link-btn" type="button">FEEDBACK</button>
         <p class="keys">P or Esc also resumes</p>
       </div>
       <div id="pause-confirm" class="hidden">
@@ -151,6 +155,22 @@
       <div id="garage-paints" class="garage-paints"></div>
       <button id="garage-shop" class="link-btn" type="button">GET MORE PAINT IN THE SHOP</button>
       <button id="garage-back" class="share alt small" type="button">BACK</button>
+    </section>
+
+    <section id="screen-feedback" class="panel menu-panel hidden">
+      <h2>Feedback</h2>
+      <p class="keys">Thanks for playtesting!</p>
+      <div id="fb-stars" class="fb-stars">
+        <button type="button" aria-label="1 star">★</button><button type="button" aria-label="2 stars">★</button><button type="button" aria-label="3 stars">★</button><button type="button" aria-label="4 stars">★</button><button type="button" aria-label="5 stars">★</button>
+      </div>
+      <label class="fb-label" for="fb-bad">What was confusing or annoying?</label>
+      <textarea id="fb-bad" class="fb-text" rows="3" maxlength="700"></textarea>
+      <label class="fb-label" for="fb-good">What did you like?</label>
+      <textarea id="fb-good" class="fb-text" rows="3" maxlength="700"></textarea>
+      <p class="keys">Your device, FPS, and this run's stats are attached automatically.</p>
+      <button id="fb-send" class="share" type="button">SEND</button>
+      <p id="fb-msg" class="toast"></p>
+      <button id="fb-back" class="share alt small" type="button">BACK</button>
     </section>
 
     <section id="screen-spin" class="panel menu-panel hidden">

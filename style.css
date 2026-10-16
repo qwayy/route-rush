@@ -328,3 +328,13 @@ h2 { font-size: 20px; font-weight: 400; text-transform: uppercase; color: var(--
 /* ---------- Performance toast ---------- */
 .perf-toast { position: absolute; left: 0; right: 0; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); width: max-content; margin: 0 auto; z-index: 20; padding: 8px 12px; border: 3px solid #1a1c2c; background: #2a3346; color: var(--gold); font: 8px/1.4 "Press Start 2P", monospace; pointer-events: none; opacity: 0; transition: opacity 0.3s steps(3); }
 .perf-toast.show { opacity: 1; }
+
+/* ---------- Tutorial + feedback ---------- */
+.tut-skip { position: absolute; top: calc(10px + env(safe-area-inset-top, 0px) + var(--gy, 0px)); left: 0; right: 0; width: max-content; margin: 0 auto; z-index: 5; padding: 8px 10px; border: 3px solid #1a1c2c; background: rgba(42, 51, 70, 0.92); color: #fff; font: 8px/1 "Press Start 2P", monospace; cursor: pointer; touch-action: manipulation; }
+.tut-skip[hidden] { display: none; }
+.fb-stars { display: flex; justify-content: center; gap: 6px; margin-top: 12px; }
+.fb-stars button { width: 40px; height: 40px; border: 3px solid #1a1c2c; background: #1a1c2c; color: #4a4f5a; font-size: 22px; line-height: 1; cursor: pointer; touch-action: manipulation; }
+.fb-stars button.on { color: var(--gold); }
+.fb-label { display: block; margin-top: 12px; font-size: 8px; text-align: left; }
+.fb-text { display: block; width: 100%; margin-top: 6px; padding: 8px; border: 3px solid #1a1c2c; background: #f6f3ea; color: #1b1b1b; font: 14px/1.4 system-ui, sans-serif; resize: vertical; -webkit-user-select: text; user-select: text; touch-action: auto; }
+#screen-feedback .share.small { margin-top: 8px; }

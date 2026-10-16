@@ -41,6 +41,7 @@ const CONFIG = {
 
   // Look: pixel art + fake 3D
   typeSpeed: 38,
+  tutorialSpeed: 0.6,        // first-time tutorial ride, x the normal Monday speed
   unlockPopTime: 3,          // seconds a "new rider" pop-up stays up             // cutscene typewriter, characters per second
   pixelSize: 2,              // logical units per art pixel; must divide gameWidth (2 = crisp, 4 = chunky)
   heightY: 0.75,             // how far up the screen one unit of height draws
@@ -619,6 +620,7 @@ function resetGame() {
     street: buildStreet(),
     overTitle: '', overReason: '', overShownAt: 0, runCoins: 0, continued: false, coinBump: 0,
     powerClock: 0, nextPowerAt: rand(CONFIG.powerEvery[0], CONFIG.powerEvery[1]),   // route time, carried across days
+    tutorial: null, fpsSum: 0, fpsN: 0,
   });
   setupDay();
 }
@@ -671,7 +673,8 @@ function speedFor(day, housesPassed) {
 // Very first Monday only: a few obstacle-free seconds + the controls hint.
 function isFirstDay() { return game.day === 0 && game.week === 1; }
 function targetSpeed() {
-  return speedFor(game.day, game.housesPassedToday) * (hasModel('road') ? CONFIG.roadBikeSpeed : 1) * (game.eBoost > 0 ? CONFIG.eBikeBoost : 1);
+  const tut = game.tutorial ? (game.tutorial.frozen ? 0 : CONFIG.tutorialSpeed) : 1;   // tutorial: slow, and stopped while it waits
+  return tut * speedFor(game.day, game.housesPassedToday) * (hasModel('road') ? CONFIG.roadBikeSpeed : 1) * (game.eBoost > 0 ? CONFIG.eBikeBoost : 1);
 }
 // Where the bike can steer: the road, or (Fat Tire) up onto the sidewalk and lawn edge.
 function bikeRange() {
@@ -831,6 +834,7 @@ canvas.addEventListener('pointerdown', (e) => {
   if (game.state !== 'playing') return;
   if (e.pointerType === 'mouse' && e.button !== 0) return;
   e.preventDefault();
+  if (tutorialTap()) return;   // tutorial's last card: tap to start
   if (toLogicalX(e.clientX) < 150 && toLogicalY(e.clientY) < view.safeTop + 62) { scoreTap(); return; }   // score corner never throws
   if (tiltActive()) {
     throwPaper(toLogicalX(e.clientX) < view.W / 2 ? -1 : 1);
@@ -882,6 +886,7 @@ const KEYS_THROW_RIGHT = ['KeyD', 'KeyX'];
 
 window.addEventListener('keydown', (e) => {
   if (Monetization.isBusy()) return;   // an ad / store dialog is up
+  if (e.target && (e.target.tagName === 'TEXTAREA' || (e.target.tagName === 'INPUT' && e.target.type === 'text'))) return;   // typing feedback
   if (KEYS_LEFT.includes(e.code)) { input.left = true; e.preventDefault(); }
   else if (KEYS_RIGHT.includes(e.code)) { input.right = true; e.preventDefault(); }
   if (e.repeat) return;
@@ -907,6 +912,7 @@ window.addEventListener('keydown', (e) => {
   else if (KEYS_THROW_RIGHT.includes(e.code)) throwPaper(1);
   else if (e.code === 'Space' || e.code === 'Enter') {
     e.preventDefault();
+    if (tutorialTap()) return;
     tryStartFromOverlay();
   }
 });
@@ -1528,6 +1534,7 @@ function update(dt) {
   }
   game.speed = damp(game.speed, targetSpeed(), CONFIG.speedEase, dt);
   game.dist += game.speed * dt;
+  if (game.tutorial) tutorialUpdate(dt);
   const stroke = Math.floor(game.dist / CONFIG.pedalStroke);
   if (stroke !== game.pedalPhase) { game.pedalPhase = stroke; if (bike.airT <= 0) sfx.pedalTick(game.speed); }
 
@@ -1825,6 +1832,7 @@ function throwPaper(side) {
   game.throwCooldown = CONFIG.throwCooldown * (riderHas('quickArm') ? CONFIG.quickArmCooldown : 1);
   game.queuedThrow = 0;
   sfx.throw();
+  if (game.tutorial) game.tutorial.threw |= side < 0 ? 1 : 2;
   for (const sd of powerOn('storm') ? [side, -side] : [side]) {   // Paper Storm: both sides at once
     const x = bike.x + sd * 8;
     const p = {
@@ -2792,6 +2800,7 @@ function render(now) {
   drawFlash();
   if (game.state !== 'title' && game.state !== 'menu') drawHUD();
   drawHint(t);
+  drawTutorial(t);
   if (game.state === 'playing' || game.state === 'crashed') drawBanner();
   ctx.restore();
 }
@@ -4303,7 +4312,7 @@ function drawBanner() {
 }
 
 function drawHint(t) {
-  if (game.state !== 'playing' || !isFirstDay() || game.time > CONFIG.graceTime) return;
+  if (game.state !== 'playing' || !isFirstDay() || game.time > CONFIG.graceTime || game.tutorial) return;
   const a = clamp(Math.min((CONFIG.graceTime - game.time) / 0.8, game.time / 0.3), 0, 1);
   ctx.save();
   ctx.globalAlpha = a;
@@ -4966,7 +4975,7 @@ function quitToMenu() {
   showTitle();
 }
 const onTap = (id, fn) => document.getElementById(id).addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); fn(); });
-onTap('pause-retry', () => { if (game.state === 'paused') retryDay(); });
+onTap('pause-retry', () => { if (game.state === 'paused') { if (game.tutorial) startTutorial(); else retryDay(); } });
 onTap('pause-settings', () => {
   const open = pauseUI.settings.classList.toggle('hidden') === false;
   pauseUI.settingsBtn.classList.toggle('open', open);
@@ -5550,7 +5559,7 @@ function powerOn(type) { return game.power && game.power.type === type && game.p
 // About one every powerEvery seconds of route riding (the clock carries over
 // from day to day), somewhere you can ride into.
 function spawnPowerups(dt) {
-  if (game.phase !== 'route') return;
+  if (game.phase !== 'route' || game.tutorial) return;
   game.powerClock += dt;
   if (game.powerClock < game.nextPowerAt) return;
   game.nextPowerAt = game.powerClock + rand(CONFIG.powerEvery[0], CONFIG.powerEvery[1]);
@@ -6585,8 +6594,9 @@ function drawSkillHUD(top) {
 // Start from the title: pick a rider the first time, then the intro, then ride.
 function requestRun() {
   if (!rider) { showRiderSelect(requestRun); return; }
-  if (!progress.seen.intro) { playCutscene('intro', startGame); return; }
-  startGame();
+  const go = () => (needsTutorial() ? startTutorial() : startGame());   // very first run: the guided ride first
+  if (!progress.seen.intro) { playCutscene('intro', go); return; }
+  go();
 }
 
 
@@ -6599,7 +6609,10 @@ gfx.setting = ['auto', 'high', 'low'].includes(storage.get(GFX_KEY, 'auto')) ? s
 gfx.level = gfx.setting === 'low' ? 'low' : 'high';
 const perf = { fps: 60, upd: 0, ren: 0, label: '', nextLabel: 0 };
 function perfMeter(real, upd, ren) {
-  if (real > 0 && real < 1) perf.fps += (1 / real - perf.fps) * 0.1;
+  if (real > 0 && real < 1) {
+    perf.fps += (1 / real - perf.fps) * 0.1;
+    if (game.state === 'playing') { game.fpsSum += 1 / real; game.fpsN++; }   // run average (feedback report)
+  }
   perf.upd += (upd - perf.upd) * 0.1;
   perf.ren += (ren - perf.ren) * 0.1;
   // AUTO: if riding stays under autoLowFps for autoLowAfter seconds, drop to low quality (once).
@@ -6643,6 +6656,206 @@ function perfLabel() {
 }
 
 // ---------------------------------------------------------------------
+// 9g. FIRST-TIME TUTORIAL + PLAYTEST FEEDBACK
+// The tutorial is a scripted ~20 s ride on a quiet Waldo street (no
+// obstacles, slowed down). The ride stops beside each house and waits for
+// the player to do the step. Feedback opens the player's email app with
+// their answers and run details filled in (no backend needed yet).
+// ---------------------------------------------------------------------
+const TUT_STEPS = ['steer', 'left', 'right', 'mailbox', 'window', 'ready'];
+const tutUI = { skip: document.getElementById('tut-skip') };
+function needsTutorial() { return !progress.tutorialDone && !progress.furthest && !best; }
+function startTutorial() {
+  if (audio.settings.music !== 'off') startMusic();   // still inside the tap that got us here
+  resetGame();
+  game.day = 0; game.week = 1;
+  setupDay();
+  // Replace the day's layout with the scripted street.
+  Object.assign(game, { houses: [], decor: [], obstacles: [], ramps: [], targets: [], tracks: [], lines: [], driveways: [], pavedLots: [], lights: [], powerups: [], banners: [] });
+  game.stats.subs = 0;
+  const rng = mulberry32(4242);
+  const mk = (side, z, sub) => {
+    const len = 140, tpl = { side, len, sub, newSub: false, seed: (Math.abs(z) * 7919 + (side > 0 ? 31 : 0)) | 0, props: [] };
+    const h = makeHouse(tpl, side, z, len, mulberry32(tpl.seed), false);
+    game.houses.push(h);
+    if (sub) game.stats.subs++;
+    return h;
+  };
+  const H = {
+    left: mk(-1, 320, true), mail: mk(-1, 880, true), right: mk(1, 600, true), win: mk(1, 1160, false),
+  };
+  for (const [side, z] of [[-1, 40], [-1, 600], [-1, 1160], [-1, 1440], [1, 180], [1, 880], [1, 1440]]) mk(side, z, false);
+  setPropertyBounds();
+  for (const side of [-1, 1]) {
+    const zs = game.houses.filter((h) => h.side === side).map((h) => h.z).sort((a, b) => a - b);
+    for (let i = 0; i < zs.length - 1; i++) decorateGap(side, zs[i] + 140, zs[i + 1], rng, HOUSE_STYLES[game.houses.find((h) => h.side === side && h.z === zs[i]).style]);
+  }
+  addTrees(-view.H, 20);
+  game.routeEndZ = 1e9;
+  game.bonus = { z0: 1e9, z1: 1e9, clean: true };
+  game.nextObstacleZ = 1e9;
+  clearScoringZones();
+  for (const tile of groundTiles.values()) releaseCanvas(tile.c);
+  groundTiles.clear();
+  const w0 = hitZones(H.win).windows[1];   // the window past the porch: well clear of the mailbox
+  game.tutorial = {
+    step: 0, H, frozen: true, since: 0, threw: 0, minX: bike.x, maxX: bike.x, go: false,
+    stops: [0, H.left.z + H.left.len / 2, H.right.z + H.right.len / 2, H.mail.mailZ, (w0[0] + w0[1]) / 2, null],
+  };
+  game.speed = 0;
+  game.state = 'playing';
+  hideOverlay();
+  if (tilt.enabled) calibrateTilt();
+  sfx.dayStart();
+}
+// Called from update() while the tutorial runs.
+function tutorialUpdate(dt) {
+  const T = game.tutorial, step = TUT_STEPS[T.step];
+  const stopAt = T.stops[T.step];
+  if (!T.frozen && stopAt !== null && game.dist >= stopAt) { game.dist = stopAt; game.speed = 0; T.frozen = true; T.since = 0; }
+  if (!T.frozen) return;
+  T.since += dt;
+  const done = () => {
+    T.step++; T.frozen = false; T.threw = 0; T.since = 0; T.minX = T.maxX = bike.x;
+    if (TUT_STEPS[T.step] === 'ready') T.stops[T.step] = game.dist + 110;   // roll a little, then the last card
+    sfx.blip(T.step, 0.12);
+  };
+  switch (step) {
+    case 'steer':
+      T.minX = Math.min(T.minX, bike.x); T.maxX = Math.max(T.maxX, bike.x);
+      if (T.minX < 200 - 22 && T.maxX > 200 + 22 && T.since > 0.8) done();
+      break;
+    case 'left': if ((T.threw & 1) && !game.flying.length && T.since > 0.4) done(); break;
+    case 'right': if ((T.threw & 2) && !game.flying.length && T.since > 0.4) done(); break;
+    case 'mailbox': if (T.H.mail.delivered && !game.flying.length) done(); break;
+    case 'window': if (T.H.win.windows.some(Boolean) && !game.flying.length) done(); break;
+    case 'ready': if (T.go) finishTutorial(); break;
+  }
+}
+function finishTutorial() {
+  progress.tutorialDone = 1;
+  saveProgress();
+  game.tutorial = null;
+  startGame();   // the real Monday run
+}
+function tutorialTap() {   // last card: a tap starts the run (returns true if it used the tap)
+  const T = game.tutorial;
+  if (!T || TUT_STEPS[T.step] !== 'ready' || !T.frozen) return false;
+  T.go = true;
+  return true;
+}
+tutUI.skip.addEventListener('click', (e) => { e.stopPropagation(); if (!game.tutorial) return; sfx.click(); finishTutorial(); });
+document.querySelectorAll('.tut-replay').forEach((b) => b.addEventListener('click', (e) => {
+  e.stopPropagation();
+  sfx.click();
+  if (!rider) rider = curRider();
+  startTutorial();
+}));
+
+// 8-bit prompt card while the ride waits for the player.
+function drawTutorial(t) {
+  const T = game.tutorial;
+  if (!T || !T.frozen || game.state !== 'playing') return;
+  const step = TUT_STEPS[T.step], touch = isTouchDevice;
+  const text = {
+    steer: tiltActive() ? 'Tilt your phone to steer' : touch ? 'Drag your finger left and right to steer' : 'Use the arrow keys to steer',
+    left: touch ? 'Tap the LEFT side to throw left' : 'Press A to throw left',
+    right: touch ? 'Tap the RIGHT side to throw right' : 'Press D to throw right',
+    mailbox: 'Hit the porch for points, hit the MAILBOX for big points!',
+    window: 'Break windows on houses WITHOUT the marker for bonus points',
+    ready: "Don't crash! Ready?",
+  }[step];
+  const sub = {
+    steer: `${T.minX < 178 ? '✓' : '·'} left   ${T.maxX > 222 ? '✓' : '·'} right`,
+    left: 'Throw at the house with the marker',
+    right: 'Throw at the house with the marker',
+    mailbox: 'Throw now: you are right beside it',
+    window: touch ? 'Tap the RIGHT side' : 'Press D',
+    ready: Math.floor(t * 2.5) % 2 ? (touch ? 'TAP TO START' : 'TAP OR PRESS SPACE') : '',
+  }[step];
+  ctx.save();
+  ctx.font = `11px ${FONT}`;
+  const lines = wrapText(text, view.W - 72);
+  const bw = view.W - 40, bh = 34 + lines.length * 18 + (sub !== undefined ? 18 : 0), x0 = 20, y0 = Math.round(view.H * 0.2);
+  ctx.fillStyle = PAL.k; ctx.fillRect(x0 - 4, y0 - 4, bw + 8, bh + 8);
+  ctx.fillStyle = '#f6f3ea'; ctx.fillRect(x0, y0, bw, bh);
+  ctx.fillStyle = '#2a3346'; ctx.fillRect(x0 + 4, y0 + 4, bw - 8, bh - 8);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.font = `7px ${FONT}`;
+  textShadowed(`TUTORIAL ${T.step + 1}/${TUT_STEPS.length}`, view.W / 2, y0 + 10, COLORS.perfect);
+  ctx.font = `11px ${FONT}`;
+  lines.forEach((ln, i) => textShadowed(ln, view.W / 2, y0 + 26 + i * 18, '#ffffff'));
+  if (sub) { ctx.font = `8px ${FONT}`; textShadowed(sub, view.W / 2, y0 + 28 + lines.length * 18, COLORS.good); }
+  // big blinking arrow on the side to tap
+  if ((step === 'left' || step === 'right' || step === 'window') && Math.floor(t * 3) % 2) {
+    const dir = step === 'left' ? -1 : 1, cx = view.W / 2 + dir * view.W * 0.3, cy = view.H * 0.62;
+    ctx.fillStyle = PAL.k;
+    ctx.beginPath(); ctx.moveTo(cx + dir * 22, cy); ctx.lineTo(cx - dir * 12, cy - 22); ctx.lineTo(cx - dir * 12, cy + 22); ctx.fill();
+    ctx.fillStyle = COLORS.perfect;
+    ctx.beginPath(); ctx.moveTo(cx + dir * 17, cy); ctx.lineTo(cx - dir * 9, cy - 16); ctx.lineTo(cx - dir * 9, cy + 16); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// --- Playtest feedback ---
+const FEEDBACK_EMAIL = 'jocjones02@gmail.com';
+const fbUI = {
+  panel: document.getElementById('screen-feedback'),
+  stars: document.getElementById('fb-stars'),
+  bad: document.getElementById('fb-bad'),
+  good: document.getElementById('fb-good'),
+  msg: document.getElementById('fb-msg'),
+  back: null, rating: 0,
+};
+function setStars(n) {
+  fbUI.rating = n;
+  fbUI.stars.querySelectorAll('button').forEach((b, i) => b.classList.toggle('on', i < n));
+}
+function openFeedback() {
+  fbUI.back = game.state === 'paused' ? ui.pause : ui.over;
+  fbUI.msg.textContent = '';
+  setStars(fbUI.rating);
+  showPanel(fbUI.panel);
+}
+function feedbackReport() {
+  const s = game.stats || {}, r = curRider(), m = MODELS.find((x) => x.id === bikeModel());
+  const fps = game.fpsN ? Math.round(game.fpsSum / game.fpsN) : Math.round(perf.fps);
+  const input = tiltActive() ? 'tilt' : isTouchDevice ? 'drag/touch' : 'keyboard';
+  return [
+    `Rating: ${fbUI.rating || '-'} / 5`,
+    '',
+    'What was confusing or annoying?',
+    (fbUI.bad.value || '-').slice(0, 700),
+    '',
+    'What did you like?',
+    (fbUI.good.value || '-').slice(0, 700),
+    '',
+    '--- attached automatically ---',
+    `Date: ${new Date().toISOString()}`,
+    `Device/browser: ${navigator.userAgent}`,
+    `Screen: ${window.innerWidth}x${window.innerHeight} @${window.devicePixelRatio || 1}x (game canvas ${canvas.width}x${canvas.height})`,
+    `Average FPS this run: ${fps}  (graphics ${gfx.setting}, now ${gfx.level})`,
+    `Reached: week ${game.week}, ${DAY_NAMES[game.day] || '-'} (${theme().name})  score ${game.score}  best ${best}`,
+    `Rider: ${r.name} (${SKILLS[r.skill].name})  Bike: ${m ? m.name : bikeModel()}, paint ${equippedBike().name}`,
+    `Controls: ${input}; tilt ${tilt.enabled ? 'on' : 'off'}, sensitivity ${tilt.sens}`,
+    `Sound: sfx ${audio.settings.sfx ? 'on' : 'off'}, music ${audio.settings.music}, volume ${Math.round(audio.settings.volume * 100)}%`,
+    `Deliveries today: ${s.deliveries || 0}/${s.subs || 0}  coins ${wallet}`,
+  ].join('\n');
+}
+fbUI.stars.querySelectorAll('button').forEach((b, i) => b.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); setStars(i + 1); }));
+document.querySelectorAll('.fb-open').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); openFeedback(); }));
+document.getElementById('fb-back').addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showPanel(fbUI.back || ui.over); if (fbUI.back === ui.pause) showPauseView('main'); });
+document.getElementById('fb-send').addEventListener('click', (e) => {
+  e.stopPropagation();
+  sfx.click();
+  const subject = `Route Rush playtest feedback (${fbUI.rating || '-'}/5)`;
+  window.location.href = `mailto:${FEEDBACK_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(feedbackReport())}`;
+  fbUI.msg.textContent = 'Opening your email app... just hit send. Thanks!';
+});
+
+
+// ---------------------------------------------------------------------
 // 10. LOOP
 // ---------------------------------------------------------------------
 let lastTime = performance.now();
@@ -6662,6 +6875,8 @@ function frame(now) {
   updatePedalSound(game.state === 'playing' && bike.airT <= 0 && !bike.crashed);
   const hidePause = game.state !== 'playing';
   if (ui.pauseBtn.hidden !== hidePause) ui.pauseBtn.hidden = hidePause;
+  const hideSkip = !(game.tutorial && game.state === 'playing');
+  if (tutUI.skip.hidden !== hideSkip) tutUI.skip.hidden = hideSkip;
   pumpUnlocks();
   requestAnimationFrame(frame);
 }
