@@ -129,7 +129,12 @@ const CONFIG = {
   bonusGap: 380,             // road between the last house and the start line
   bonusDuration: 12,         // seconds of course (at the day's speed)
   bonusWeights: { jump: 2, targets: 2, slalom: 1 },
-  targetHalf: 10,            // target hit half-length along the street
+  targetHalf: 10,            // target hit half-length along the street (before BONUS_TARGET_HITBOX_SCALE)
+  WINDOW_HITBOX_SCALE: 1.6,  // non-subscriber windows: hit area this much longer than the drawn window
+  BONUS_TARGET_HITBOX_SCALE: 1.7,   // bonus targets: hit area this much bigger than the drawn target
+  targetLx: 120,             // bonus targets stand at the sidewalk edge, first thing a paper reaches
+  targetMinGap: 0.8,         // seconds between bonus targets on the same side (at bonus speed)
+  targetAssist: 26,          // bonus course: a paper passing this close to a target curves into it
   targetSafeRadius: 18,      // decorations keep this clear of mailboxes, porches, bonus targets and ramps
   markerMinY: 90,            // subscriber markers never sit higher than this (just below the HUD bar)
   markerLookAhead: 320,      // markers show up this far before their house scrolls on screen
@@ -228,7 +233,7 @@ const CONFIG = {
   continueInvuln: 2,         // KEEP RIDING: seconds of blinking after resuming
 
   // Player visibility
-  PLAYER_SCALE: 1.3,         // bike + rider drawn this much bigger than the art (hitbox scales with it)
+  PLAYER_SCALE: 1.15,        // bike + rider drawn this much bigger than the art (hitbox scales with it)
   playerHighlight: 0.22,     // strength of the light pool under the bike
 
   // Bike models (perks). Unlocked by challenges only, never sold.
@@ -985,7 +990,7 @@ function scoringSpots() {
     spots.push({ kind: 'mailbox', h, x: sideX(h.side, L.mailboxX), z: h.mailZ, rx: 8, rz: 8 });
     spots.push({ kind: 'porch', h, x: sideX(h.side, 92), z: h.z + h.len / 2, rx: 12, rz: L.porchHalf });
   }
-  for (const t of game.targets) spots.push({ kind: 'bonus target', t, x: sideX(t.side, t.lx), z: t.z, rx: 10, rz: 10 });
+  for (const t of game.targets) spots.push({ kind: 'bonus target', t, x: sideX(t.side, t.lx), z: t.z, rx: 10, rz: CONFIG.targetHalf * CONFIG.BONUS_TARGET_HITBOX_SCALE });
   for (const r of game.ramps) spots.push({ kind: 'ramp', r, x: r.x, z: r.z, rx: r.w / 2, rz: r.h / 2 });
   return spots;
 }
@@ -1344,10 +1349,12 @@ function buildBonus(z0, z1) {
         addJump(z, weightedPick(B.jumps, rng), rng);
         z += 380;
         break;
-      case 'targets':
-        for (let i = 0; i < 3; i++) { addTargets(side, z + i * 100, weightedPick(B.targets, rng)); side = -side; }
-        z += 360;
+      case 'targets': {   // alternating sides, at least targetMinGap seconds apart on the same side
+        const step = Math.max(100, CONFIG.targetMinGap * speed / 2);
+        for (let i = 0; i < 3; i++) { addTargets(side, z + i * step, weightedPick(B.targets, rng)); side = -side; }
+        z += step * 3 + 60;
         break;
+      }
       case 'slalom':
         for (let i = 0; i < 3; i++) {
           game.obstacles.push({ type: 'barrier', x: mid + side * streetW * 0.2, z: z + i * 130, w: streetW * 0.6, h: 8 });
@@ -1379,12 +1386,13 @@ function addJump(z, kind, rng) {
 
 // Roadside targets (+300 each): a row of mailboxes, a sidewalk sign, a
 // newsstand, a BBQ smoker or a fountain basin.
-function addTargets(side, z, kind) {
-  if (kind === 'mailboxes') {
-    for (let i = -1; i <= 1; i++) game.targets.push({ side, lx: 116, z: z + i * 40, hit: false, kind: 'mailbox' });   // far enough apart that each bullseye clears the next box
-    return;
-  }
-  game.targets.push({ side, lx: kind === 'fountain' ? 112 : 116, z, hit: false, kind });
+function addTargets(side, z, kind) {   // one target at the sidewalk edge, in the paper's path
+  game.targets.push({ side, lx: CONFIG.targetLx - (kind === 'fountain' ? 4 : 0), z, hit: false, kind: kind === 'mailboxes' ? 'mailbox' : kind });
+}
+// Target hit box: BONUS_TARGET_HITBOX_SCALE x the drawn target.
+function targetBox(t) {
+  const k = CONFIG.BONUS_TARGET_HITBOX_SCALE, hx = 6 * k, hz = CONFIG.targetHalf * k;
+  return [t.lx - hx, t.lx + hx, t.z - hz, t.z + hz];
 }
 
 function spawnAhead() {
@@ -1799,6 +1807,7 @@ function throwPaper(side) {
 // each step against every hitbox, so nothing is skipped at low frame rates.
 function updatePaper(p, dt) {
   if (powerOn('magnet')) magnetPull(p);
+  else if (game.phase !== 'route') targetAssist(p);
   p.rot += p.spin * dt;
   if (p.h > CONFIG.throwHeight) p.h = Math.max(CONFIG.throwHeight, p.h - 80 * dt);   // thrown mid-jump
   const dx = CONFIG.throwSpeed * (riderHas('quickArm') ? CONFIG.quickArmPaperSpeed : 1) * dt, dz = p.vz * dt;
@@ -1856,7 +1865,7 @@ function paperHit(p, a) {
   };
   const FAR = -1000;   // "from this line inward": a box reaching to the back of the lot
   for (const t of game.targets) {
-    if (t.side === p.side && !t.hit) test(t.lx - 6, t.lx + 4, t.z - CONFIG.targetHalf, t.z + CONFIG.targetHalf, { type: 'target', t });
+    if (t.side === p.side && !t.hit) { const [x0, x1, z0, z1] = targetBox(t); test(x0, x1, z0, z1, { type: 'target', t }); }
   }
   for (const h of game.houses) {
     if (h.side !== p.side || p.z < h.propZ0 - 40 || p.z > h.propZ1 + 40) continue;
@@ -1867,9 +1876,13 @@ function paperHit(p, a) {
       if (zone) test(zone.x0, zone.x1, zone.z0, zone.z1, { type: zone.type, h, idx: zone.idx });
       continue;
     }
-    // Non-subscribers: props, mailbox, porch and walls in the order the paper meets them.
-    const zn = hitZones(h);
-    for (const pr of h.props) {
+    // Non-subscribers: windows first (a paper over a window's hit area goes to the
+    // window, past any yard prop), then props, mailbox, porch and walls.
+    const zn = hitZones(h), wz = windowHitZones(h);
+    const zlo = Math.min(a[1], b[1]), zhi = Math.max(a[1], b[1]);
+    const overWindow = wz.some(([lo, hi], i) => !h.windows[i] && zhi >= lo && zlo <= hi);
+    wz.forEach(([lo, hi], i) => { if (!h.windows[i]) test(FAR, L.wallX + 2, lo, hi, { type: 'wall', h, win: i }); });
+    if (!overWindow) for (const pr of h.props) {
       if (!pr.knocked) test(pr.lx - pr.hw, pr.lx + pr.hw, pr.z - pr.hz - 3, pr.z + pr.hz + 3, { type: 'prop', h, pr });
     }
     test(zn.mailboxX[0], zn.mailboxX[1], zn.mailbox[0], zn.mailbox[1], { type: 'mailbox', h });
@@ -1907,8 +1920,7 @@ function applyPaperHit(p, hit) {
       hit.t.hit = true;
       s.targets++;
       sfx.ping();
-      addPoints(bonusPts(CONFIG.pointsBonusTarget));
-      popText(`+${bonusPts(CONFIG.pointsBonusTarget)}`, x, z, COLORS.perfect, 24);
+      popText(`+${addPoints(bonusPts(CONFIG.pointsBonusTarget))} TARGET!`, x, z, COLORS.perfect, 24);
       burst(x, z, { fountain: COLORS.waterLight, smoker: COLORS.smoke, newsstand: COLORS.paper }[hit.t.kind] || COLORS.bad, 12, 130);
       burst(x, z, '#ffffff', 8, 110);
       dropPaper(p, hit.lx + 6);
@@ -1937,6 +1949,7 @@ function applyPaperHit(p, hit) {
 
     case 'porch':
       if (h.sub) deliverTo(h, 'porch', x, z);
+      else { const idx = nearestWindow(h, z); if (idx >= 0) breakWindow(h, idx, x, z); }   // non-subscriber front: nearest window
       dropPaper(p, L.porchX1 - 6);
       break;
 
@@ -1950,8 +1963,8 @@ function applyPaperHit(p, hit) {
       dropPaper(p, L.wallX + 8);
       break;
 
-    case 'wall': {   // non-subscriber wall: windows are fair game
-      const idx = hitZones(h).windows.findIndex(([lo, hi]) => z >= lo && z <= hi);
+    case 'wall': {   // non-subscriber front: any hit breaks the nearest window (+points)
+      const idx = hit.win !== undefined ? hit.win : nearestWindow(h, z);
       if (idx >= 0 && !h.windows[idx]) breakWindow(h, idx, x, z);
       dropPaper(p, L.wallX + 8);
       break;
@@ -2013,7 +2026,7 @@ function breakWindow(h, idx, x, z) {
 function hitZones(h) {
   const cz = h.z + h.len / 2;
   const porch = CONFIG.porchHitHalf + CONFIG.paperHalf;   // door/porch/steps (paper touching it counts)
-  const winNear = porch + CONFIG.windowGap, winFar = h.len / 2 - 6;
+  const winNear = porch + CONFIG.windowGap, winFar = Math.max(winNear + 12, h.len / 2 - 6);   // always two street-facing windows
   const mb = riderHas('sureShot') ? CONFIG.sureShotMailbox : 1;   // Sure Shot: bigger mailbox target
   return {
     cz,
@@ -2041,18 +2054,43 @@ function breakCombo(x, z) {
   game.combo = 0;
 }
 
+// Non-subscriber windows are easy targets: the hit area is WINDOW_HITBOX_SCALE
+// times the drawn window (centred, kept off the porch and the house ends).
+function windowHitZones(h) {
+  const zn = hitZones(h), k = CONFIG.WINDOW_HITBOX_SCALE;
+  return zn.windows.map(([lo, hi]) => {
+    const len = (hi - lo) * k, before = (lo + hi) / 2 < zn.cz;
+    // grow it, sliding away from the porch if needed, and keep it on the house
+    let a = (lo + hi) / 2 - len / 2, b = a + len;
+    if (before && b > zn.porch[0]) { a -= b - zn.porch[0]; b = zn.porch[0]; }
+    if (!before && a < zn.porch[1]) { b += zn.porch[1] - a; a = zn.porch[1]; }
+    return [Math.max(h.z, a), Math.min(h.z + h.len, b)];
+  });
+}
+// The unbroken window nearest to z (null when they're all broken).
+function nearestWindow(h, z) {
+  let best = -1, bd = Infinity;
+  hitZones(h).windows.forEach(([lo, hi], i) => {
+    if (h.windows[i]) return;
+    const d = Math.abs((lo + hi) / 2 - z);
+    if (d < bd) { bd = d; best = i; }
+  });
+  return best;
+}
+
 function canDeliver(h) { return h.sub && !h.delivered; }
 function deliver(h) { h.delivered = true; game.stats.deliveries++; game.totalDelivered++; }
 function dropPaper(p, lx) { game.groundPapers.push({ x: sideX(p.side, lx), z: p.z, rot: p.rot }); }
 
 function bonusPts(n) { return riderHas('hustler') ? Math.round(n * CONFIG.hustlerBonus) : n; }   // Hustler
 
-function addPoints(n) {
+function addPoints(n) {   // returns what was actually added
   const mult = (hasModel('road') ? CONFIG.roadBikePoints : 1) * (powerOn('double') ? 2 : 1);
   if (mult !== 1) n = Math.round(Math.round(n * mult) / 10) * 10;
   game.score += n;
   if (game.phase === 'route') game.stats.routePoints += n;
   else game.stats.bonusPoints += n;
+  return n;
 }
 
 // --- Effects ---
@@ -2420,10 +2458,10 @@ SPR.markerGlow = (() => {   // 1-pixel light halo around the marker
     }
   });
 })();
-SPR.ring = spriteFromFn(9, 9, (px) => {
-  for (let y = 0; y < 9; y++) for (let x = 0; x < 9; x++) {
-    const d = Math.hypot(x + 0.5 - 4.5, y + 0.5 - 4.5);
-    if (d <= 4.5) px(x, y, d > 3.7 ? PAL.k : d > 2.6 ? PAL.r : d > 1.5 ? '#ffffff' : PAL.r);
+SPR.ring = spriteFromFn(13, 13, (px) => {   // bullseye with a bright outer edge
+  for (let y = 0; y < 13; y++) for (let x = 0; x < 13; x++) {
+    const d = Math.hypot(x + 0.5 - 6.5, y + 0.5 - 6.5);
+    if (d <= 6.5) px(x, y, d > 5.7 ? '#fff7c2' : d > 4.9 ? PAL.k : d > 3.7 ? PAL.r : d > 2.4 ? '#ffffff' : PAL.r);
   }
 });
 SPR.shadowS = makeShadow(6, 2);
@@ -2873,6 +2911,15 @@ function houseOpenings(g) {
     } else {
       quadX(wx, lo + 2, hi - 2, wh0, wh1, COLORS.window);
       quadX(wx, lo + 2, hi - 2, wh1 - 4, wh1, COLORS.windowShine);
+      if (!h.sub && !h.scenery) {   // glint sweeping across: "this one's breakable"
+        const ph = (g.t * 0.9 + hash(h.seed, wi) * 3) % 1.6;
+        if (ph < 0.45) {
+          const zg = lerp(lo + 3, hi - 6, ph / 0.45);
+          l3([wx, zg, wh0 + 1], [wx, zg + 4, wh1 - 1], '#ffffff');
+          l3([wx, zg + 2, wh0 + 1], [wx, zg + 6, wh1 - 1], COLORS.windowShine);
+          if (ph < 0.18) { const [sx, sy0] = proj(g.X(wx), hi - 3, wh1 + 2), ps = CONFIG.pixelSize; rectL(sx - ps, sy0, ps * 3, ps, '#ffffff'); rectL(sx, sy0 - ps, ps, ps * 3, '#ffffff'); }
+        }
+      }
       for (let m = lo + pane; m < hi - 8; m += pane) quadX(wx, m, m + 2, wh0, wh1, frame);
       if (st.arches) {   // arched top on each pane (Moorish arcade look)
         for (let m = lo + 2; m < hi - 6; m += pane) {
@@ -3606,11 +3653,17 @@ function drawRamp(r) {
 function drawTarget(tg, t) {
   const x = sideX(tg.side, tg.lx), y = sy(tg.z), z = tg.z;
   if (y < -10 || y - 70 > view.H) return;
+  if (!tg.hit) {   // bright pulsing ring on the ground: stands out on every palette
+    const pulse = 0.5 + 0.5 * Math.sin(t * 6 + z);
+    pix.globalAlpha = 0.6; pix.fillStyle = PAL.k; ringPixels(x, z, 15 + pulse * 2, 11 + pulse * 1.5);
+    pix.globalAlpha = 0.95; pix.fillStyle = '#fff7c2'; ringPixels(x, z, 14 + pulse * 2, 10 + pulse * 1.5);
+    pix.globalAlpha = 1;
+  }
   switch (tg.kind) {
     case 'mailbox':
-      box3(x - 1, x + 1, z - 1, z + 1, 0, 11, COLORS.post);
-      box3(x - 4, x + 4, z - 5, z + 5, 11, 18, '#3a5a8c');
-      if (tg.hit) box3(x + 4, x + 5, z - 2, z + 3, 14, 24, COLORS.bad);
+      box3(x - 1.5, x + 1.5, z - 1.5, z + 1.5, 0, 12, COLORS.post);
+      box3(x - 5.5, x + 5.5, z - 7, z + 7, 12, 21, '#3a5a8c', '#5a7fb8');
+      if (tg.hit) box3(x + 5, x + 6.5, z - 2, z + 3, 15, 26, COLORS.bad);
       break;
     case 'sign': {   // sidewalk sign board facing the street
       const col = ['#d64545', '#2f9e6b', '#3a7bd5', '#e8a33d'][(hash(z | 0, 3) * 4) | 0];
@@ -3625,7 +3678,7 @@ function drawTarget(tg, t) {
       break;
     }
     case 'newsstand':
-      box3(x - 5, x + 5, z - 7, z + 7, 0, 16, '#2f6b4f', tg.hit ? '#9fd3a8' : '#3f8a63');
+      box3(x - 6.5, x + 6.5, z - 9, z + 9, 0, 19, '#2f6b4f', tg.hit ? '#9fd3a8' : '#3f8a63');
       poly3([[x - 4, z - 7, 6], [x + 4, z - 7, 6], [x + 4, z - 7, 13], [x - 4, z - 7, 13]], '#cfe9f7');
       for (let i = 0; i < 3; i++) rectL(...proj(x - 3 + i * 3, z - 7, 9), 2, 2, PAL.e);
       break;
@@ -3641,8 +3694,7 @@ function drawTargetRings(t) {
     if (tg.hit || !tg.kind) continue;
     const x = sideX(tg.side, tg.lx), y = sy(tg.z);
     if (y < -10 || y - 70 > view.H) continue;
-    const lift = tg.kind === 'mailbox' ? 28 : 34;   // mailbox rows: low enough to clear the next box in the row
-    const [rx, ry] = proj(x, tg.z, lift + (Math.sin(t * 5 + tg.z) > 0 ? CONFIG.pixelSize : 0));
+    const [rx, ry] = proj(x, tg.z, 34 + (Math.sin(t * 5 + tg.z) > 0 ? CONFIG.pixelSize : 0));
     drawSprite(SPR.ring, rx, ry);
   }
 }
@@ -3767,11 +3819,12 @@ function drawHitAreas() {
     const zn = hitZones(h);
     if (h.sub) outline(h.side, 4, FRONT, zn.property[0], zn.property[1], COLORS.debugProperty);
     outline(h.side, L.wallX, L.stepsX, zn.porch[0], zn.porch[1], COLORS.good);
-    zn.windows.forEach(([lo, hi]) => outline(h.side, L.wallX - 3, L.wallX + 2, lo, hi, COLORS.bad));
+    if (h.sub) zn.windows.forEach(([lo, hi]) => outline(h.side, L.wallX - 3, L.wallX + 2, lo, hi, COLORS.bad));
+    else windowHitZones(h).forEach(([lo, hi], i) => { if (!h.windows[i]) outline(h.side, L.wallX - 6, L.wallX + 4, lo, hi, COLORS.glass); });   // easy non-subscriber windows
     outline(h.side, zn.mailboxX[0], zn.mailboxX[1], zn.mailbox[0], zn.mailbox[1], COLORS.perfect);
     if (!h.sub) for (const pr of h.props) if (!pr.knocked) outline(h.side, pr.lx - pr.hw, pr.lx + pr.hw, pr.z - pr.hz - 3, pr.z + pr.hz + 3, '#ffffff');
   }
-  for (const t of game.targets) if (!t.hit) outline(t.side, t.lx - 6, t.lx + 4, t.z - CONFIG.targetHalf, t.z + CONFIG.targetHalf, '#ffffff');
+  for (const t of game.targets) if (!t.hit) { const [x0, x1, z0, z1] = targetBox(t); outline(t.side, x0, x1, z0, z1, '#ffffff'); }
   for (const r of game.ramps) {   // ramp footprint
     const c = [[r.x - r.w / 2, r.z - r.h / 2], [r.x + r.w / 2, r.z - r.h / 2], [r.x + r.w / 2, r.z + r.h / 2], [r.x - r.w / 2, r.z + r.h / 2]].map(([x, z]) => proj(x, z, 0));
     for (let i = 0; i < 4; i++) lineL(c[i], c[(i + 1) % 4], COLORS.good);
@@ -3871,7 +3924,7 @@ function drawHUD() {
     ctx.font = `8px ${FONT}`;
     textShadowed(`DEBUG: TRIPLE-TAP SCORE · WARN ${debug.warnings}`, view.W / 2, top + 76, debug.warnings ? COLORS.bad : COLORS.good);
     ctx.textAlign = 'left';
-    const key = [['MAILBOX', COLORS.perfect], ['PORCH', COLORS.good], ['PROPERTY', COLORS.debugProperty], ['WINDOW', COLORS.bad]];
+    const key = [['MAILBOX', COLORS.perfect], ['PORCH', COLORS.good], ['PROPERTY', COLORS.debugProperty], ['SUB WIN', COLORS.bad], ['WINDOW', COLORS.glass], ['TARGET', '#ffffff']];
     let kx = 8;
     for (const [label, col] of key) { textShadowed(label, kx, view.H - 10, col); kx += ctx.measureText(label).width + 12; }
   }
@@ -5209,6 +5262,18 @@ function drawPowerFx(t, x, y) {
   if (type === 'double') for (let i = 0; i < 6; i++) { const an = t * 3 + i * 1.05; if (Math.floor(t * 10 + i) % 3) P(Math.cos(an) * 18, -24 + Math.sin(an) * 28, '#ffd23f'); }
   if (type === 'slowmo') { pix.globalAlpha = 1 - (t * 1.5 % 1); pix.fillStyle = '#7fd0c4'; ringPixels(bike.x, game.dist, 14 + (t * 1.5 % 1) * 20, 10 + (t * 1.5 % 1) * 14); pix.globalAlpha = 1; }
   if (type === 'storm') for (let i = 0; i < 4; i++) { const an = -t * 7 + i * 1.57; P(Math.cos(an) * 22, -20 + Math.sin(an) * 14, '#f7f4ea'); P(Math.cos(an) * 22 + 2, -20 + Math.sin(an) * 14, '#f7f4ea'); }
+}
+// Bonus course assist: a paper about to pass close to a target curves into it.
+function targetAssist(p) {
+  let best = null;
+  for (const t of game.targets) {
+    if (t.hit || t.side !== p.side || p.lx < t.lx) continue;
+    const d = Math.abs(t.z - p.z);
+    if (d < CONFIG.targetAssist + CONFIG.targetHalf * CONFIG.BONUS_TARGET_HITBOX_SCALE && (!best || d < Math.abs(best.z - p.z))) best = t;
+  }
+  if (!best) return;
+  const left = Math.max(0.03, (p.lx - best.lx) / CONFIG.throwSpeed);
+  p.vz = clamp((best.z - p.z) / left, -260, 260);
 }
 // Magnet: steer a paper's z toward the nearest subscriber's mailbox on its side.
 function magnetPull(p) {
