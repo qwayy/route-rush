@@ -70,7 +70,9 @@ const CONFIG = {
   tiltFastAngle: 4,          // bigger moves than this (degrees) are followed up to 3x faster: smooth but no lag
   tiltCalTime: 0.5,          // seconds of readings averaged to find "level" (tap skips)
   tiltCalWait: 1.5,          // give up waiting for a silent sensor after this long
-  tiltMaxNeutral: 35,        // a "level" leaned further than this is clamped (with a hint)
+  tiltAutoTrim: 2.5,         // automatic calibration keeps a hold this close to level as "straight" (a crooked grip); further = true level
+  tiltHintAngle: 12,         // held further off level than this at the start: "hold your phone level" hint
+  tiltMaxNeutral: 35,        // RECENTER TILT: a "level" leaned further than this is clamped (with a hint)
   maxLean: 0.3,              // bike lean (radians) at full sideways speed
   leanPerSpeed: 0.0022,      // lean per unit of sideways speed
   dragSensitivity: 1.15,     // logical units moved per logical unit dragged
@@ -780,6 +782,7 @@ const pointers = new Map();
 const tilt = {
   listening: false, enabled: false, denied: false,
   raw: 0, smooth: 0, base: 0, last: 0,   // sideways lean in degrees: latest, smoothed, calibrated "level"
+  home: 0,                               // "straight" before fine-tuning: true level, or the RECENTER TILT angle
   steer: 0,                              // final steering value -1..1 (debug readout)
   src: '', listenAt: 0,                  // gravity source: 'orient' (orientation angles) or 'motion' (accelerometer)
   cal: null,                             // calibration in progress
@@ -806,7 +809,8 @@ function tiltSample(lean) {
   if (tilt.cal) { tilt.cal.sum += lean; tilt.cal.n++; }   // only readings that arrive during calibration count
   if (!tilt.enabled) {
     tilt.enabled = true;
-    tilt.smooth = tilt.base = lean;
+    tilt.smooth = lean;
+    tilt.base = tilt.home;
     if (game.state === 'playing') calibrateTilt();   // sensor came alive mid-ride (e.g. iPhone permission)
     updateSteerUI();
   }
@@ -855,10 +859,14 @@ function tiltOnFirstTap() {
 if (!tilt.needsPermission && window.isSecureContext) listenForTilt();
 document.addEventListener('click', tiltOnFirstTap, true);
 document.addEventListener('touchend', tiltOnFirstTap, true);
-// Calibration: "level" = the AVERAGE lean over tiltCalTime of real readings,
-// taken while the player holds the phone the way they'll ride. The world and
-// every timer wait (update() returns early) and "HOLD STEADY" shows; a tap
-// skips it. Runs at every run start, retry, continue, resume and after cutscenes.
+// Calibration: averages the lean over tiltCalTime of real readings while the
+// world and every timer wait (update() returns early) and "HOLD STEADY" shows;
+// a tap skips it. Runs at every run start, retry, continue, resume and after
+// cutscenes. "Straight" is the phone held level (the lean is measured against
+// gravity, so that's the same upright, leaned back or flat); the automatic
+// calibration only fine-tunes it by tiltAutoTrim, so a phone tilted while
+// tapping START doesn't leave the bike pulling to one side. RECENTER TILT
+// (pause menu) makes the current hold "straight" on purpose, e.g. lying down.
 function calibrateTilt() {
   if (!tilt.enabled) return;   // no sensor (desktop / drag): nothing to calibrate, no pause
   tilt.cal = { age: 0, held: 0, sum: 0, n: 0 };
@@ -874,12 +882,17 @@ function finishTiltCalibration() {
   if (!c) return;
   tilt.cal = null;
   if (!c.n && !tiltActive()) return;   // sensor silent: keep the last "level"
-  let base = c.n ? c.sum / c.n : tilt.raw;   // skipped before a reading: the latest one
-  if (Math.abs(base) > CONFIG.tiltMaxNeutral) {
-    base = Math.sign(base) * CONFIG.tiltMaxNeutral;
-    showToast('Hold your phone more level for best control');
+  const held = c.n ? c.sum / c.n : tilt.raw;   // skipped before a reading: the latest one
+  if (c.manual) {
+    tilt.home = clamp(held, -CONFIG.tiltMaxNeutral, CONFIG.tiltMaxNeutral);
+    if (Math.abs(held) > CONFIG.tiltMaxNeutral) showToast('Hold your phone more level for best control');
+    tilt.base = tilt.home;
+  } else {
+    if (tilt.home && Math.abs(held - tilt.home) > CONFIG.tiltHintAngle && Math.abs(held) <= CONFIG.tiltHintAngle) tilt.home = 0;   // back to holding it normally
+    const off = held - tilt.home;
+    tilt.base = tilt.home + (Math.abs(off) <= CONFIG.tiltAutoTrim ? off : 0);   // a slightly crooked grip is kept; a tilted phone isn't
+    if (Math.abs(off) > CONFIG.tiltHintAngle) showToast('Hold your phone level to ride straight');
   }
-  tilt.base = base;
   tilt.smooth = tilt.raw;   // start from where the phone is now, no lag
 }
 // Sideways steering speed from tilt: dead zone, then a gentle-to-hard curve up
@@ -5071,7 +5084,11 @@ function quitToMenu() {
   showTitle();
 }
 const onTap = (id, fn) => document.getElementById(id).addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); fn(); });
-onTap('pause-recenter', () => { if (game.state === 'paused') resumeGame(); });   // resume = hold steady + new "level"
+onTap('pause-recenter', () => {   // resume with "hold steady"; this hold becomes "straight"
+  if (game.state !== 'paused') return;
+  resumeGame();
+  if (tilt.cal) tilt.cal.manual = true;
+});
 onTap('pause-retry', () => { if (game.state === 'paused') { if (game.tutorial) startTutorial(); else retryDay(); } });
 onTap('pause-settings', () => {
   const open = pauseUI.settings.classList.toggle('hidden') === false;
