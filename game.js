@@ -57,13 +57,20 @@ const CONFIG = {
   speedEase: 1.5,            // how quickly speed eases toward its target
 
   // Steering. Phones: tilt left/right (falls back to drag). Desktop: arrows.
-  tiltFullAngle: 13,         // degrees of tilt for full steering (at sensitivity 5)
-  tiltDeadZone: 2,           // degrees around "level" that keep the bike straight
+  // Tilt is measured as the phone's sideways LEAN (from the gravity direction),
+  // which reads about cos(pitch) of the old side-tilt angle. Tuned to feel the
+  // same as before at a typical ~40 degree hold (old values: 13 and 2).
+  tiltFullAngle: 10,         // degrees of lean for full steering (at sensitivity 5)
+  tiltDeadZone: 1.5,         // degrees around "level" that keep the bike straight
   tiltCurve: 1.6,            // >1: small tilts steer gently, bigger tilts steer hard
   tiltMaxSteer: 380,         // sideways speed at full tilt
   tiltSensDefault: 5,        // sensitivity slider 1..10 (start screen + pause menu, saved)
   tiltSensStep: 1.12,        // each slider step shrinks/grows the full-tilt angle by this factor
   tiltSmoothing: 12,         // filters sensor jitter (higher = snappier, lower = smoother)
+  tiltFastAngle: 4,          // bigger moves than this (degrees) are followed up to 3x faster: smooth but no lag
+  tiltCalTime: 0.5,          // seconds of readings averaged to find "level" (tap skips)
+  tiltCalWait: 1.5,          // give up waiting for a silent sensor after this long
+  tiltMaxNeutral: 35,        // a "level" leaned further than this is clamped (with a hint)
   maxLean: 0.3,              // bike lean (radians) at full sideways speed
   leanPerSpeed: 0.0022,      // lean per unit of sideways speed
   dragSensitivity: 1.15,     // logical units moved per logical unit dragged
@@ -772,23 +779,59 @@ const pointers = new Map();
 // No sensor, no permission, or no https -> drag-to-steer takes over.
 const tilt = {
   listening: false, enabled: false, denied: false,
-  raw: 0, smooth: 0, base: 0, last: 0,
+  raw: 0, smooth: 0, base: 0, last: 0,   // sideways lean in degrees: latest, smoothed, calibrated "level"
+  steer: 0,                              // final steering value -1..1 (debug readout)
+  src: '', listenAt: 0,                  // gravity source: 'orient' (orientation angles) or 'motion' (accelerometer)
+  cal: null,                             // calibration in progress
   sens: clamp(parseInt(storage.get(TILT_KEY, ''), 10) || CONFIG.tiltSensDefault, 1, 10),
   needsPermission: typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function',
 };
 const isTouchDevice = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
 
+// Sideways lean (degrees, + = right side down) from the "up" direction in the
+// phone's own axes (x right, y top, z out of the screen). This is the same
+// whether the phone is upright, leaned back or flat, where gamma alone goes
+// haywire near upright. Follows the screen's rotation.
+function leanFromUp(x, y, z) {
+  const len = Math.hypot(x, y, z);
+  if (!(len > 0)) return null;
+  const a = ((screen.orientation && screen.orientation.angle) || window.orientation || 0) * Math.PI / 180;
+  const side = -(x * Math.cos(a) - y * Math.sin(a)) / len;   // up along the screen's right edge, flipped
+  return Math.asin(clamp(side, -1, 1)) * 180 / Math.PI;
+}
+function tiltSample(lean) {
+  if (lean == null) return;
+  tilt.raw = lean;
+  tilt.last = performance.now();
+  if (tilt.cal) { tilt.cal.sum += lean; tilt.cal.n++; }   // only readings that arrive during calibration count
+  if (!tilt.enabled) {
+    tilt.enabled = true;
+    tilt.smooth = tilt.base = lean;
+    if (game.state === 'playing') calibrateTilt();   // sensor came alive mid-ride (e.g. iPhone permission)
+    updateSteerUI();
+  }
+}
 function onOrientation(e) {
   if (e.gamma == null || e.beta == null) return;
-  const angle = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
-  tilt.raw = angle === 90 ? e.beta : angle === -90 || angle === 270 ? -e.beta : e.gamma;
-  tilt.last = performance.now();
-  if (!tilt.enabled) { tilt.enabled = true; calibrateTilt(); updateSteerUI(); }
+  tilt.src = 'orient';
+  // Gravity in the phone's axes from the orientation angles (alpha doesn't matter).
+  const b = e.beta * Math.PI / 180, g = e.gamma * Math.PI / 180;
+  tiltSample(leanFromUp(-Math.cos(b) * Math.sin(g), Math.sin(b), Math.cos(b) * Math.cos(g)));
+}
+// Fallback for phones without orientation data: the accelerometer's gravity.
+function onMotion(e) {
+  if (tilt.src === 'orient' || performance.now() - tilt.listenAt < 1000) return;   // orientation wins when it exists
+  const a = e.accelerationIncludingGravity;
+  if (!a || a.x == null || a.y == null || a.z == null) return;
+  tilt.src = 'motion';
+  tiltSample(leanFromUp(a.x, a.y, a.z));
 }
 function listenForTilt() {
   if (tilt.listening || !isTouchDevice) return;
   tilt.listening = true;
+  tilt.listenAt = performance.now();
   window.addEventListener('deviceorientation', onOrientation);
+  window.addEventListener('devicemotion', onMotion);
 }
 // iPhone only lets a page read motion after the player taps "enable".
 async function requestTilt() {
@@ -812,14 +855,41 @@ function tiltOnFirstTap() {
 if (!tilt.needsPermission && window.isSecureContext) listenForTilt();
 document.addEventListener('click', tiltOnFirstTap, true);
 document.addEventListener('touchend', tiltOnFirstTap, true);
-function calibrateTilt() { tilt.base = tilt.smooth = tilt.raw; }
+// Calibration: "level" = the AVERAGE lean over tiltCalTime of real readings,
+// taken while the player holds the phone the way they'll ride. The world and
+// every timer wait (update() returns early) and "HOLD STEADY" shows; a tap
+// skips it. Runs at every run start, retry, continue, resume and after cutscenes.
+function calibrateTilt() {
+  if (!tilt.enabled) return;   // no sensor (desktop / drag): nothing to calibrate, no pause
+  tilt.cal = { age: 0, held: 0, sum: 0, n: 0 };
+}
+function tickTiltCalibration(dt) {
+  const c = tilt.cal;
+  c.age += dt;
+  if (c.n) c.held += dt;   // the clock starts with the first real reading
+  if (c.held >= CONFIG.tiltCalTime || (!c.n && c.age >= CONFIG.tiltCalWait)) finishTiltCalibration();
+}
+function finishTiltCalibration() {
+  const c = tilt.cal;
+  if (!c) return;
+  tilt.cal = null;
+  if (!c.n && !tiltActive()) return;   // sensor silent: keep the last "level"
+  let base = c.n ? c.sum / c.n : tilt.raw;   // skipped before a reading: the latest one
+  if (Math.abs(base) > CONFIG.tiltMaxNeutral) {
+    base = Math.sign(base) * CONFIG.tiltMaxNeutral;
+    showToast('Hold your phone more level for best control');
+  }
+  tilt.base = base;
+  tilt.smooth = tilt.raw;   // start from where the phone is now, no lag
+}
 // Sideways steering speed from tilt: dead zone, then a gentle-to-hard curve up
 // to full steering at tiltFullAngle (scaled by the sensitivity slider).
 function tiltSteer() {
   const a = tilt.smooth - tilt.base, dz = CONFIG.tiltDeadZone;
   const full = CONFIG.tiltFullAngle * Math.pow(CONFIG.tiltSensStep, 5 - tilt.sens);   // higher sensitivity = less tilt needed
   const n = clamp((Math.abs(a) - dz) / Math.max(1, full - dz), 0, 1);
-  return Math.sign(a) * Math.pow(n, CONFIG.tiltCurve) * CONFIG.tiltMaxSteer;
+  tilt.steer = Math.sign(a) * Math.pow(n, CONFIG.tiltCurve);   // -1..1
+  return tilt.steer * CONFIG.tiltMaxSteer;
 }
 // --- Touch / mouse ---
 // With tilt on, every touch is a throw (left half = left, right half =
@@ -847,6 +917,7 @@ canvas.addEventListener('pointerdown', (e) => {
   if (game.state !== 'playing') return;
   if (e.pointerType === 'mouse' && e.button !== 0) return;
   e.preventDefault();
+  if (tilt.cal) { finishTiltCalibration(); return; }   // tap skips "HOLD STEADY" (and doesn't throw)
   if (tutorialTap()) return;   // tutorial's last card: tap to start
   if (toLogicalX(e.clientX) < 150 && toLogicalY(e.clientY) < view.safeTop + 62) { scoreTap(); return; }   // score corner never throws
   if (tiltActive()) {
@@ -1525,6 +1596,7 @@ function update(dt) {
     return;
   }
   if (game.state !== 'playing') return;
+  if (tilt.cal) { tickTiltCalibration(dt); return; }   // world + all timers wait until "level" is measured
 
   // Slow-Mo: the world runs slower; steering, throwing and timers stay real-time.
   const realDt = dt;
@@ -1553,7 +1625,11 @@ function update(dt) {
 
   // Steering
   const cruiser = hasModel('cruiser');
-  if (tilt.enabled) tilt.smooth = damp(tilt.smooth, tilt.raw, CONFIG.tiltSmoothing * (cruiser ? CONFIG.cruiserTiltSmooth : 1), realDt);
+  if (tilt.enabled) {
+    // Light smoothing: jitter is filtered as before, real moves are followed up to 3x faster.
+    const fast = 1 + Math.min(2, Math.abs(tilt.raw - tilt.smooth) / CONFIG.tiltFastAngle);
+    tilt.smooth = damp(tilt.smooth, tilt.raw, CONFIG.tiltSmoothing * fast * (cruiser ? CONFIG.cruiserTiltSmooth : 1), realDt);
+  }
   const sens = riderHas('smoothRider') ? CONFIG.smoothSensitivity : 1;
   if (tiltActive()) input.steerTarget += tiltSteer() * sens * realDt;
   if (input.left) input.steerTarget -= CONFIG.keySteerSpeed * sens * realDt;
@@ -2814,6 +2890,7 @@ function render(now) {
   if (game.state !== 'title' && game.state !== 'menu') drawHUD();
   drawHint(t);
   drawTutorial(t);
+  drawTiltCalibration();
   if (game.state === 'playing' || game.state === 'crashed') drawBanner();
   ctx.restore();
 }
@@ -4238,6 +4315,7 @@ function drawHUD() {
     ctx.textAlign = 'center';
     ctx.font = `8px ${FONT}`;
     textShadowed(perfLabel(), view.W / 2, top + 90, perf.fps < 45 ? COLORS.bad : COLORS.good);   // frame meter
+    if (perf.tiltLabel) textShadowed(perf.tiltLabel, view.W / 2, top + 102, COLORS.glass);   // raw lean, level, steering
     ctx.textAlign = 'left';
     const keyCols = [['MAILBOX', COLORS.perfect], ['PORCH', COLORS.good], ['PROPERTY', COLORS.debugProperty], ['SUB WIN', COLORS.bad], ['WINDOW', COLORS.glass], ['TARGET', '#ffffff']];
     let kx = 8;
@@ -4944,6 +5022,8 @@ function pauseGame() {
   pointers.clear();
   input.left = input.right = false;
   game.queuedThrow = 0;   // nothing tapped before pausing fires afterwards
+  tilt.cal = null;
+  document.getElementById('pause-recenter').classList.toggle('hidden', !tilt.enabled);
   showPauseView('main');
   pauseMusic();
   updatePedalSound(false);
@@ -4953,14 +5033,17 @@ function resumeGame() {
   if (game.state !== 'paused') return;
   game.state = 'playing';
   pointers.clear();
-  tilt.smooth = tilt.raw;   // tilting the phone while paused doesn't yank the bike on resume
+  calibrateTilt();   // re-find "level": the phone was probably put down or held differently
   hideOverlay();
   if (music.on) startMusic();
 }
 // Auto-pause: phone locked, app in the background, tab switched, window left.
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { pauseGame(); pauseMusic(); }
-  else if (music.on && game.state !== 'paused') startMusic();
+  else {
+    if (music.on && game.state !== 'paused') startMusic();
+    if (game.state === 'playing') calibrateTilt();   // back from the background
+  }
 });
 window.addEventListener('pagehide', () => { pauseGame(); pauseMusic(); });
 window.addEventListener('blur', () => pauseGame());
@@ -4988,6 +5071,7 @@ function quitToMenu() {
   showTitle();
 }
 const onTap = (id, fn) => document.getElementById(id).addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); fn(); });
+onTap('pause-recenter', () => { if (game.state === 'paused') resumeGame(); });   // resume = hold steady + new "level"
 onTap('pause-retry', () => { if (game.state === 'paused') { if (game.tutorial) startTutorial(); else retryDay(); } });
 onTap('pause-settings', () => {
   const open = pauseUI.settings.classList.toggle('hidden') === false;
@@ -6658,12 +6742,35 @@ document.querySelectorAll('.set-gfx').forEach((b) => b.addEventListener('click',
   updateGfxUI();
 }));
 updateGfxUI();
+// "HOLD STEADY" card + fill bar while tilt calibrates.
+function drawTiltCalibration() {
+  const c = tilt.cal;
+  if (!c || game.state !== 'playing') return;
+  const bw = 220, bh = 66, x0 = Math.round((view.W - bw) / 2), y0 = Math.round(view.H * 0.36);
+  ctx.save();
+  ctx.fillStyle = PAL.k; ctx.fillRect(x0 - 4, y0 - 4, bw + 8, bh + 8);
+  ctx.fillStyle = '#f6f3ea'; ctx.fillRect(x0, y0, bw, bh);
+  ctx.fillStyle = '#2a3346'; ctx.fillRect(x0 + 4, y0 + 4, bw - 8, bh - 8);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.font = `12px ${FONT}`;
+  textShadowed('HOLD STEADY', view.W / 2, y0 + 12, '#ffffff');
+  const fill = clamp(c.held / CONFIG.tiltCalTime, 0, 1);
+  ctx.fillStyle = PAL.k; ctx.fillRect(x0 + 20, y0 + 32, bw - 40, 8);
+  ctx.fillStyle = COLORS.good; ctx.fillRect(x0 + 21, y0 + 33, Math.round((bw - 42) * fill), 6);
+  ctx.font = `7px ${FONT}`;
+  textShadowed('TAP TO SKIP', view.W / 2, y0 + 48, '#9aa3b5');
+  ctx.restore();
+}
+
 // Debug overlay readout (refreshed 4x a second so the text cache stays small).
 function perfLabel() {
   const now = performance.now();
   if (now > perf.nextLabel) {
     perf.nextLabel = now + 250;
     perf.label = `FPS ${Math.round(perf.fps)}  UPD ${perf.upd.toFixed(1)}ms  REN ${perf.ren.toFixed(1)}ms  ${gfx.level.toUpperCase()}`;
+    const sg = (v, d) => (v >= 0 ? '+' : '') + v.toFixed(d);
+    perf.tiltLabel = tilt.enabled ? `TILT ${sg(tilt.raw, 1)}°  LEVEL ${sg(tilt.base, 1)}°  STEER ${sg(tilt.steer, 2)}${tilt.src === 'motion' ? '  ACC' : ''}` : '';
   }
   return perf.label;
 }
@@ -6769,7 +6876,7 @@ document.querySelectorAll('.tut-replay').forEach((b) => b.addEventListener('clic
 // 8-bit prompt card while the ride waits for the player.
 function drawTutorial(t) {
   const T = game.tutorial;
-  if (!T || !T.frozen || game.state !== 'playing') return;
+  if (!T || !T.frozen || game.state !== 'playing' || tilt.cal) return;
   const step = TUT_STEPS[T.step], touch = isTouchDevice;
   const text = {
     steer: touch ? 'Tilt your phone to steer' : 'Drag with the mouse to steer',
