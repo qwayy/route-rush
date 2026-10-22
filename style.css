@@ -133,7 +133,7 @@ h2 { font-size: 20px; font-weight: 400; text-transform: uppercase; color: var(--
 .summary .total b { color: var(--gold); }
 .place { margin-top: 8px; font-size: 10px; color: var(--gold); }
 #over-reached { font-size: 12px; line-height: 20px; }
-.share.hidden { display: none; }
+.share.hidden, .privacy-btn.hidden { display: none; }
 #steer-mode { margin-top: 10px; opacity: 0.8; color: var(--gold); }
 
 /* ---------- Pause button + sound settings ---------- */

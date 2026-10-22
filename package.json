@@ -1,0 +1,22 @@
+{
+  "name": "route-rush",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Route Rush KC: Kansas City newspaper delivery game (web + Android via Capacitor)",
+  "scripts": {
+    "build": "node scripts/build-web.mjs",
+    "sync": "node scripts/build-web.mjs && npx cap sync android",
+    "phone": "node scripts/phone.mjs",
+    "open": "npx cap open android"
+  },
+  "dependencies": {
+    "@capacitor-community/admob": "8.2.1",
+    "@capacitor/android": "8.5.3",
+    "@capacitor/app": "8.1.2",
+    "@capacitor/core": "8.5.3",
+    "@capacitor/preferences": "8.0.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.3"
+  }
+}

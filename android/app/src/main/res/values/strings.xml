@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Route Rush KC</string>
+    <string name="title_activity_main">Route Rush KC</string>
+    <string name="package_name">com.qwaysarproductions.routerush</string>
+    <string name="custom_url_scheme">com.qwaysarproductions.routerush</string>
+</resources>

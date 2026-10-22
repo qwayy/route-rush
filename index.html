@@ -8,9 +8,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>Route Rush</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap">
+  <link rel="stylesheet" href="fonts/fonts.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -46,6 +44,7 @@
       </div>
       <div class="tilt-row"><span>TILT</span><input class="set-tilt" type="range" min="1" max="10" step="1" value="5" aria-label="Tilt sensitivity"><b class="tilt-val">5</b></div>
       <button class="restore-btn link-btn" type="button">RESTORE PURCHASES</button>
+      <button class="privacy-btn link-btn hidden" type="button">PRIVACY OPTIONS</button>
       <p class="restore-msg keys"></p>
       <button class="tut-replay link-btn" type="button">REPLAY TUTORIAL</button>
       <p class="cta">Tap to start</p>
@@ -90,6 +89,7 @@
             </div>
             <div class="tilt-row"><span>TILT</span><input class="set-tilt" type="range" min="1" max="10" step="1" value="5" aria-label="Tilt sensitivity"><b class="tilt-val">5</b></div>
             <button class="restore-btn link-btn" type="button">RESTORE PURCHASES</button>
+      <button class="privacy-btn link-btn hidden" type="button">PRIVACY OPTIONS</button>
             <p class="restore-msg keys"></p>
           </div>
           <button id="pause-quit" class="share alt" type="button">MAIN MENU</button>
@@ -182,6 +182,14 @@
       <button id="spin-back" class="share alt small" type="button">BACK</button>
     </section>
 
+    <section id="screen-exit" class="panel menu-panel hidden">
+      <h2>Exit game?</h2>
+      <div class="pause-btns">
+        <button id="exit-yes" class="share" type="button">YES</button>
+        <button id="exit-no" class="share alt" type="button">NO</button>
+      </div>
+    </section>
+
     <section id="screen-day" class="panel hidden">
       <h2 id="day-title">Monday done</h2>
       <p id="day-place" class="place"></p>
@@ -202,7 +210,10 @@
 
   <div id="unlock-pop" class="unlock-pop hidden"></div>
 
+  <script src="saves.js"></script>
+  <script src="ads.config.js"></script>
   <script src="monetization.js"></script>
   <script src="game.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

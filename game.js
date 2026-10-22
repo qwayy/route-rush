@@ -1,5 +1,9 @@
 'use strict';
 
+// Release build of the Android app (the signed Google Play build): no debug
+// tools, no test labels, no placeholder store. Debug builds and the web keep them.
+const RELEASE_BUILD = !!(window.RRNative && RRNative.isRelease && RRNative.isRelease());
+
 // =====================================================================
 //  ROUTE RUSH — prototype
 //
@@ -23,7 +27,7 @@
 //  as if on the LEFT side (right-side things are mirrored with sideX).
 //
 //  A run is endless weeks (Monday..Sunday, then WEEK 2, 3...) on the same
-//  street. Each day: route (20 houses) -> bonus course -> summary. Papers
+//  street. Each day: route (25-60 houses, see DIFFICULTY) -> bonus course -> summary. Papers
 //  are unlimited; the only way to lose is crashing (CONFIG.lives).
 // =====================================================================
 
@@ -47,14 +51,55 @@ const CONFIG = {
   heightY: 0.75,             // how far up the screen one unit of height draws
   perspX: 0.0026,            // how much tall things lean away from the centre line
 
-  // Speed (world units / second)
-  startSpeed: 210,
-  speedPerDay: 22,           // added each new day
-  speedPerLevel: 12,         // added every housesPerLevel houses within a day
-  housesPerLevel: 8,         // houses passed (both sides count)
-  speedPerWeek: 20,          // each new week starts this much faster than the last
+  // Speed (world units / second). Per-day speeds live in DIFFICULTY below.
+  housesPerLevel: 8,         // a "FASTER!" every this many houses passed (both sides count)
   maxSpeed: 400,             // hard cap: later difficulty comes from obstacles, not speed
   speedEase: 1.5,            // how quickly speed eases toward its target
+
+  // ---- DIFFICULTY: day length + how hard it gets. Tune it all here. ----
+  // days[0..6] = Monday..Sunday of WEEK 1. Every later week adds `perWeek`
+  // (capped by `max`). Speed eases from `speed` to `topSpeed` across the
+  // day's houses. `obstacleGap` = SECONDS between obstacles at the start of
+  // the day (time-based, so it stays fair at any speed); it tightens a bit at
+  // every FASTER! and is multiplied by perWeek.obstacleGap each week.
+  DIFFICULTY: {
+    days: [
+      { houses: 25, subShare: 0.32, speed: 200, topSpeed: 240, obstacleGap: 3.0 },    // MON Waldo (easy)
+      { houses: 28, subShare: 0.34, speed: 212, topSpeed: 256, obstacleGap: 2.6 },    // TUE Brookside
+      { houses: 31, subShare: 0.35, speed: 224, topSpeed: 272, obstacleGap: 2.3 },    // WED Plaza
+      { houses: 34, subShare: 0.36, speed: 236, topSpeed: 288, obstacleGap: 2.05 },   // THU Westport
+      { houses: 37, subShare: 0.37, speed: 246, topSpeed: 302, obstacleGap: 1.85 },   // FRI 18th & Vine
+      { houses: 40, subShare: 0.38, speed: 256, topSpeed: 316, obstacleGap: 1.65 },   // SAT River Market
+      { houses: 44, subShare: 0.38, speed: 266, topSpeed: 330, obstacleGap: 1.5 },    // SUN Game Day
+    ],
+    perWeek: {
+      houses: 3,             // + houses per day each week
+      speed: 12, topSpeed: 12,
+      obstacleGap: 0.9,      // x obstacle gap each week (busier)
+      patternChance: 0.15,   // + chance that a spawn is a combo of two hazards (from week 2)
+      powerEvery: 1.08,      // x time between power-ups each week (a bit rarer)
+      bonusSeconds: 1.5,     // + bonus course length
+      bonusTargets: 0.5,     // + targets per target group
+    },
+    max: { houses: 60, speed: 330, topSpeed: 400, patternChance: 0.5, powerEvery: 1.5, bonusSeconds: 20, bonusTargets: 5 },
+    minObstacleGap: 0.7,       // seconds: obstacles never come closer together than this
+    obstacleGapPerLevel: 0.96, // within a day: x gap at every FASTER!
+    bonus: { seconds: 12, targetsPerGroup: 3 },   // week 1 bonus course
+    // Week 1 introduces hazards one day at a time (day index, 0 = Monday).
+    // "NEW: ..." shows the first time each one appears. From week 2 on, all are in play.
+    unlockDay: { pothole: 0, car: 0, dog: 1, cone: 2, jogger: 2, traffic: 2, median: 2, pullout: 3, skater: 4, streetcar: 5, fan: 6 },
+    introWeight: 3,            // a hazard's weight on the day it's introduced (so you meet it)
+    // Sundays and every later week: these join each neighborhood's own hazard mix.
+    extraHazards: { pothole: 1, car: 1, dog: 1, cone: 1, jogger: 0.6, pullout: 1, skater: 0.6 },
+    // Week 2+: combos (two hazards close together, usually on opposite sides).
+    patterns: [['dog', 'pullout'], ['pothole', 'car'], ['cone', 'dog'], ['car', 'skater'], ['jogger', 'dog'], ['pullout', 'cone'], ['pothole', 'pothole'], ['fan', 'car'], ['traffic', 'pothole']],
+    patternGap: [0.55, 0.8],   // seconds between the two hazards of a combo (week 2)...
+    patternGapPerWeek: 0.95,   // ...x this each later week (tighter)
+    patternGapMin: 0.4,
+    // Fairness: every spawn is checked so a bike steering this fast (well under
+    // the real tilt / key speed) can always reach an open gap. If not, it's dropped.
+    fairSteerSpeed: 220,
+  },
 
   // Steering. Phones: tilt left/right (falls back to drag). Desktop: arrows.
   // Tilt is measured as the phone's sideways LEAN (from the gravity direction),
@@ -93,9 +138,7 @@ const CONFIG = {
   paperMinLx: -20,           // a paper that hits nothing flies until it's off the screen edge
   paperStep: 4,              // papers move at most this far between hit checks (no skipped hits)
 
-  // The street and days
-  housesPerSide: 10,         // 2 x 10 = 20 houses per day
-  startSubscribers: 8,
+  // The street and days (how many houses / subscribers: DIFFICULTY)
   routeLeadIn: 260,          // empty road before the first house
   houseLenMin: 130,
   houseLenMax: 170,
@@ -137,7 +180,6 @@ const CONFIG = {
 
   // Bonus course
   bonusGap: 380,             // road between the last house and the start line
-  bonusDuration: 12,         // seconds of course (at the day's speed)
   bonusWeights: { jump: 2, targets: 2, slalom: 1 },
   targetHalf: 10,            // target hit half-length along the street (before BONUS_TARGET_HITBOX_SCALE)
   WINDOW_HITBOX_SCALE: 1.6,  // non-subscriber windows: hit area this much longer than the drawn window
@@ -153,15 +195,14 @@ const CONFIG = {
 
   // Obstacles
   graceTime: 10,             // Monday: seconds with no obstacles (hint is shown)
-  obstacleGapStart: 520,     // world distance between obstacles at level 0
-  obstacleGapMin: 210,
-  obstacleGapMul: 0.9,       // gap multiplier per level (each day + each speed-up)
-  weekObstacleMul: 0.88,     // and per week, so every week is busier than the last
-  obstacleGapFloor: 130,     // obstacles never get closer than this (keeps it survivable)
+  obstacleGapFloor: 130,     // world distance: obstacles never get closer than this (spacing itself: DIFFICULTY)
   dogSpeedMin: 110,
   dogSpeedMax: 145,
   dogRunLeadMin: 0.6,        // seconds before the bike arrives that a dog bolts
   dogRunLeadMax: 1.0,
+  pulloutLead: 1.5,          // seconds before you arrive that a car backs out of its driveway...
+  pulloutWarn: 2.6,          // ...after flashing a "!" from this far out
+  pulloutSpeed: 70,          // how fast it backs out (it stops in the curb lane, never in the middle)
   skaterSpeed: 80,           // skater rolls forward (slower than you)
   skaterWeave: 28,
   skaterWeaveFreq: 1.8,
@@ -242,7 +283,7 @@ const CONFIG = {
   spinFallbackCoins: 500,    // ...or this many coins if you already own all of those
 
   // Ads + purchases: all through monetization.js. Test mode shows labeled placeholder overlays.
-  MONETIZATION_TEST_MODE: true,
+  MONETIZATION_TEST_MODE: !RELEASE_BUILD,   // release: no placeholder store (real purchases come later)
   rewardedAdSeconds: 3,
   interstitialEvery: 3,      // at most one interstitial per this many game overs
   interstitialFreeRuns: 3,   // never during the player's first runs
@@ -268,7 +309,7 @@ const CONFIG = {
   unlockMailboxes: 50,       // Fat Tire unlock
 
   // Road power-ups
-  powerEvery: [20, 30],      // seconds between power-ups on the route
+  powerEvery: [20, 30],      // seconds between power-ups on the route (week 1; DIFFICULTY makes them rarer later)
   powerWeights: { shield: 1, magnet: 1, double: 1, slowmo: 1, storm: 1 },
   powerTime: { magnet: 8, double: 10, slowmo: 5, storm: 6 },
   powerPickupR: 18,          // pickup reach around the bike
@@ -327,8 +368,7 @@ const THEMES = [
     leaves: 0.08, leafColors: FALL_LEAVES,                // fallen leaves on lawns (0..1)
     decor: { tree: 6, bush: 3, fountain: 1, smoker: 2 },  // what fills the gaps between houses
     retainingWalls: 0.3, flags: 0, murals: 0, muralColors: [],
-    obstacles: { dog: 3, pothole: 3, cone: 2, car: 1, skater: 1 },
-    obstacleGapScale: 1.35,                               // >1 = obstacles further apart
+    obstacles: { dog: 3, pothole: 3, cone: 2, car: 1, skater: 1, pullout: 2 },
     smoke: 0.1,                                           // BBQ smoke puffs per smoker per second
     streetcars: 0,
     bonus: { jumps: { cones: 2, car: 1, fountain: 1 }, targets: { mailboxes: 3, newsstand: 1, smoker: 2 }, sideline: 'joggers', sidelineGap: 70, murals: 0 },
@@ -342,8 +382,8 @@ const THEMES = [
     leaves: 0.45, leafColors: FALL_LEAVES,
     decor: { tree: 9, bush: 2, fountain: 1 },
     retainingWalls: 0.5, flags: 0, murals: 0, muralColors: [],
-    obstacles: { jogger: 5, dog: 2, pothole: 2, car: 1, cone: 1 },
-    obstacleGapScale: 1.15, smoke: 0, streetcars: 0,
+    obstacles: { jogger: 5, dog: 2, pothole: 2, car: 1, cone: 1, pullout: 2 },
+    smoke: 0, streetcars: 0,
     bonus: { jumps: { cones: 1, car: 1, fountain: 1 }, targets: { mailboxes: 3, newsstand: 1, fountain: 1 }, sideline: 'joggers', sidelineGap: 55, murals: 0 },
     music: { bpm: 110, root: 67, scale: 'major', prog: [0, 3, 4, 0], swing: 0.05, seed: 23 },   // 8-bit track: key, scale, chords, tempo
   },
@@ -364,7 +404,7 @@ const THEMES = [
     crosswalks: 600,                                      // brick crosswalks across the boulevard, this far apart
     retainingWalls: 0, flags: 0, murals: 0, muralColors: [],
     obstacles: { traffic: 3, median: 3, car: 2, skater: 1, pothole: 1, cone: 1 },
-    obstacleGapScale: 1.05, smoke: 0, streetcars: 0,
+    smoke: 0, streetcars: 0,
     bonus: { jumps: { fountain: 3, cones: 1 }, targets: { fountain: 3, sign: 1, newsstand: 1 }, sideline: null, murals: 0 },
     music: { bpm: 112, root: 62, scale: 'mixo', prog: [0, 6, 3, 0], swing: 0.08, seed: 37 },   // 8-bit track: key, scale, chords, tempo
   },
@@ -376,8 +416,8 @@ const THEMES = [
     leaves: 0.08, leafColors: FALL_LEAVES,
     decor: { tree: 3, bush: 2, smoker: 3 },
     retainingWalls: 0.2, flags: 0, murals: 0, muralColors: [],
-    obstacles: { car: 6, skater: 2, pothole: 2, cone: 2, dog: 1 },
-    obstacleGapScale: 0.95, smoke: 0.15, streetcars: 0,
+    obstacles: { car: 6, skater: 2, pothole: 2, cone: 2, dog: 1, pullout: 3 },
+    smoke: 0.15, streetcars: 0,
     bonus: { jumps: { car: 2, cones: 2 }, targets: { sign: 3, newsstand: 2, smoker: 1 }, sideline: 'patios', lights: true, murals: 0 },
     music: { bpm: 126, root: 57, scale: 'minor', prog: [0, 5, 2, 6], swing: 0, seed: 41 },   // 8-bit track: key, scale, chords, tempo
   },
@@ -395,7 +435,7 @@ const THEMES = [
       ['#1f4e5f', '#e8a33d', '#f15bb5', '#9fd3f0'],
     ],
     obstacles: { car: 3, pothole: 3, cone: 3, skater: 2, dog: 1 },
-    obstacleGapScale: 0.9, smoke: 0.2, streetcars: 0,
+    smoke: 0.2, streetcars: 0,
     bonus: { jumps: { cones: 2, car: 1 }, targets: { sign: 2, smoker: 2, newsstand: 1 }, sideline: null, murals: 1 },
     music: { bpm: 100, root: 65, scale: 'dorian', prog: [0, 3, 0, 4], swing: 0.18, seed: 53 },   // 8-bit track: key, scale, chords, tempo
   },
@@ -409,7 +449,7 @@ const THEMES = [
     retainingWalls: 0, flags: 0, murals: 0.2,
     muralColors: [['#3a3f6a', '#ffd23f', '#ff8c42', '#9fd3f0']],
     obstacles: { car: 3, pothole: 3, cone: 3, skater: 2 },
-    obstacleGapScale: 0.85, smoke: 0.1,
+    smoke: 0.1,
     streetcars: 3,                                        // timed crossings on this day's route
     bonus: { jumps: { cones: 2, car: 2 }, targets: { newsstand: 2, sign: 2, mailboxes: 1 }, sideline: null, tracks: 2, murals: 0.2 },
     music: { bpm: 132, root: 64, scale: 'minor', prog: [0, 6, 5, 6], swing: 0, seed: 67 },   // 8-bit track: key, scale, chords, tempo
@@ -422,8 +462,8 @@ const THEMES = [
     leaves: 0.25, leafColors: FALL_LEAVES,
     decor: { crowd: 5, grill: 4, tree: 2 },
     retainingWalls: 0.3, flags: 0.85, murals: 0, muralColors: [],
-    obstacles: { fan: 5, car: 3, cone: 2, pothole: 2, dog: 1 },
-    obstacleGapScale: 0.72, smoke: 0.25, streetcars: 0,
+    obstacles: { fan: 5, car: 3, cone: 2, pothole: 2, dog: 1, pullout: 1 },
+    smoke: 0.25, streetcars: 0,
     bonus: { jumps: { car: 2, cones: 2 }, targets: { smoker: 3, mailboxes: 1, sign: 1 }, sideline: 'crowd', sidelineGap: 60, murals: 0 },
     music: { bpm: 140, root: 62, scale: 'major', prog: [0, 3, 4, 4], swing: 0, seed: 79 },   // 8-bit track: key, scale, chords, tempo
   },
@@ -575,13 +615,10 @@ window.addEventListener('resize', resize);
 window.addEventListener('orientationchange', resize);
 resize();
 
+// Saves go through SaveStore (saves.js): Capacitor Preferences in the app, localStorage on the web.
 const storage = {
-  get(key, fallback) {
-    try { const v = localStorage.getItem(key); return v === null ? fallback : v; } catch (e) { return fallback; }
-  },
-  set(key, value) {
-    try { localStorage.setItem(key, String(value)); } catch (e) { /* storage blocked: ignore */ }
-  },
+  get(key, fallback) { const v = SaveStore.get(key); return v === null ? fallback : v; },
+  set(key, value) { SaveStore.set(key, value); },
 };
 
 function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -620,7 +657,7 @@ function sy(z) { return view.bikeY - (z - view.camZ); }
 const game = { state: 'title' };
 const bike = { x: 200, vx: 0, spin: 0, crashed: false, airT: 0, h: 0, invuln: 0 };
 const input = { steerTarget: 200, left: false, right: false };
-const debug = { hitAreas: /[?&]debug=1/.test(location.search), taps: [], warned: new Set(), warnings: 0, blockers: [] };   // triple-tap the score (or H) toggles hit-area outlines; ?debug=1 starts with it on
+const debug = { hitAreas: !RELEASE_BUILD && /[?&]debug=1/.test(location.search), taps: [], warned: new Set(), warnings: 0, blockers: [] };   // triple-tap the score (or H) toggles hit-area outlines; ?debug=1 starts with it on
 let best = parseInt(storage.get(BEST_KEY, '0'), 10) || 0;
 
 function resetGame() {
@@ -646,6 +683,9 @@ function startGame() {
 
 // Fresh world for game.day; score, lives and the street carry over.
 function setupDay() {
+  game.plan = dayPlan();
+  game.mix = hazardMix();
+  game.spawnLog = { spawned: {}, patterns: 0, rejected: 0, retried: 0 };   // for tests / debug
   Object.assign(game, {
     phase: 'route', time: 0, dist: 0, level: 0, housesPassedToday: 0, phaseTimer: 0,
     throwCooldown: 0, dayStartDelivered: game.totalDelivered,
@@ -674,10 +714,26 @@ function setupDay() {
   pushBanner(DAY_NAMES[game.day], `${game.stats.subs} SUBSCRIBER${game.stats.subs === 1 ? '' : 'S'}`, COLORS.neutral, CONFIG.introTime, `${theme().name} · WEEK ${game.week}`);
 }
 
+// Today's numbers from CONFIG.DIFFICULTY: week 1's day + perWeek, capped.
+function dayPlan(day = game.day, week = game.week) {
+  const D = CONFIG.DIFFICULTY, d = D.days[day], w = Math.max(0, week - 1), P = D.perWeek, M = D.max;
+  return {
+    houses: Math.min(M.houses, d.houses + P.houses * w),
+    subShare: d.subShare,
+    speed: Math.min(M.speed, d.speed + P.speed * w),
+    topSpeed: Math.min(M.topSpeed, CONFIG.maxSpeed, d.topSpeed + P.topSpeed * w),
+    obstacleGap: Math.max(D.minObstacleGap, d.obstacleGap * Math.pow(P.obstacleGap, w)),
+    patternChance: Math.min(M.patternChance, P.patternChance * w),
+    patternGap: D.patternGap.map((g) => Math.max(D.patternGapMin, g * Math.pow(D.patternGapPerWeek, Math.max(0, w - 1)))),
+    powerEvery: Math.min(M.powerEvery, Math.pow(P.powerEvery, w)),
+    bonusSeconds: Math.min(M.bonusSeconds, D.bonus.seconds + P.bonusSeconds * w),
+    bonusTargets: Math.min(M.bonusTargets, Math.floor(D.bonus.targetsPerGroup + P.bonusTargets * w)),
+  };
+}
+// Speed eases up from the day's start speed to its top speed as you pass its houses.
 function speedFor(day, housesPassed) {
-  const lvl = Math.floor(housesPassed / CONFIG.housesPerLevel);
-  const base = CONFIG.startSpeed + (game.week - 1) * CONFIG.speedPerWeek;
-  return Math.min(CONFIG.maxSpeed, base + day * CONFIG.speedPerDay + lvl * CONFIG.speedPerLevel);
+  const p = day === game.day && game.plan ? game.plan : dayPlan(day);
+  return Math.min(CONFIG.maxSpeed, lerp(p.speed, p.topSpeed, clamp(housesPassed / p.houses, 0, 1)));
 }
 // Very first Monday only: a few obstacle-free seconds + the controls hint.
 function isFirstDay() { return game.day === 0 && game.week === 1; }
@@ -716,7 +772,7 @@ function crash(o) {
     return;
   }
   game.lives--;
-  game.crashReason = CRASH_REASONS[o.type] || 'Wipeout!';
+  game.crashReason = CRASH_REASONS[o.pull ? 'pullout' : o.type] || 'Wipeout!';
   game.crashOutcome = game.lives > 0 ? 'respawn' : 'over';
   popText(game.lives > 0 ? `CRASH! ${game.lives} LEFT` : 'CRASH!', bike.x, game.dist + 40, COLORS.bad, 26);
   sfx.crash(game.crashOutcome === 'over');
@@ -761,6 +817,7 @@ const CRASH_REASONS = {
   jogger: 'Collided with a jogger.',
   fan: 'Bowled over by an excited fan.',
   median: 'Jumped the median. Badly.',
+  pullout: 'A car backed out of its driveway.',
   streetcar: 'Lost a race with the streetcar.',
 };
 
@@ -919,6 +976,7 @@ function toLogicalY(clientY) {
 }
 // Three quick taps on the score toggle the hit-area debug view (works on phones).
 function scoreTap() {
+  if (RELEASE_BUILD) return;   // no debug view in the Play build
   const now = performance.now();
   debug.taps = debug.taps.filter((t) => now - t < 700);
   debug.taps.push(now);
@@ -992,7 +1050,7 @@ window.addEventListener('keydown', (e) => {
     else if (e.code === 'Space' || e.code === 'Enter') { e.preventDefault(); advanceCutscene(); }
     return;
   }
-  if (e.code === 'KeyH') { debug.hitAreas = !debug.hitAreas; return; }
+  if (e.code === 'KeyH' && !RELEASE_BUILD) { debug.hitAreas = !debug.hitAreas; return; }
   if (game.state === 'over' && overUnlocked() && (e.code === 'KeyR' || e.code === 'KeyN')) {
     const go = e.code === 'KeyR' ? retryDay : startGame;
     Monetization.maybeShowInterstitial(() => { if (game.state === 'over') go(); });
@@ -1025,10 +1083,12 @@ window.addEventListener('blur', () => { input.left = input.right = false; pointe
 // The street (house layout + who subscribes) is built once per game and
 // re-ridden every day. layoutDay() turns it into this day's world.
 // ---------------------------------------------------------------------
+// One slot per possible house (the longest day). Each day uses the first
+// slots on each side; subscribers stay with their slot from day to day.
 function buildStreet() {
   const street = [];
   for (const side of [-1, 1]) {
-    for (let i = 0; i < CONFIG.housesPerSide; i++) {
+    for (let i = 0; i < Math.ceil(CONFIG.DIFFICULTY.max.houses / 2); i++) {
       const len = rand(CONFIG.houseLenMin, CONFIG.houseLenMax);
       street.push({
         side, len, sub: false, newSub: false,
@@ -1037,10 +1097,22 @@ function buildStreet() {
       });
     }
   }
-  const shuffled = street.slice().sort(() => Math.random() - 0.5);
-  for (const t of shuffled.slice(0, CONFIG.startSubscribers)) t.sub = true;
-  return street;
+  return street;   // subscribers are added per day (ensureSubscribers)
 }
+// The slots a day uses: houses split between the sides (left gets the odd one).
+function daySlots(day = game.day, week = game.week) {
+  const n = dayPlan(day, week).houses, left = Math.ceil(n / 2);
+  return [...game.street.filter((t) => t.side < 0).slice(0, left), ...game.street.filter((t) => t.side > 0).slice(0, n - left)];
+}
+// Longer days get more subscribers: at least subShare of the day's houses.
+// Subscribers earned with perfect days stay on top of that.
+function subsWanted(day = game.day, week = game.week) { const p = dayPlan(day, week); return Math.round(p.houses * p.subShare); }
+function ensureSubscribers(slots, want) {
+  const free = slots.filter((t) => !t.sub);
+  let have = slots.length - free.length;
+  while (have < want && free.length) { free.splice((Math.random() * free.length) | 0, 1)[0].sub = true; have++; }
+}
+function subsPlanned(day, week) { const slots = daySlots(day, week); return Math.max(subsWanted(day, week), slots.filter((t) => t.sub).length); }
 
 // Props sit where they don't block the mailbox (22% along) or the porch (centre).
 function makeProps(len) {
@@ -1057,10 +1129,11 @@ function makeProps(len) {
 // at the speed you'll be riding there, so faster days spread them out instead
 // of cramming them together. The gaps become side yards.
 function layoutDay() {
-  const th = theme(), z0 = CONFIG.routeLeadIn;
+  const th = theme(), z0 = CONFIG.routeLeadIn, used = daySlots();
+  ensureSubscribers(used, subsWanted());
   let end = 0;
   for (const side of [-1, 1]) {
-    const slots = game.street.filter((t) => t.side === side);
+    const slots = used.filter((t) => t.side === side);
     let z = z0 + (side > 0 ? CONFIG.houseInterval * speedFor(game.day, 0) * 0.5 : 0);   // sides alternate
     slots.forEach((tpl, i) => {
       const rng = mulberry32(tpl.seed + game.day * 7919);   // same slot + day = same look
@@ -1078,13 +1151,13 @@ function layoutDay() {
   if (th.paved) for (const side of [-1, 1]) fillWithBuildings(side, -view.H - 200, z0 - 50, mulberry32(game.day * 31 + side + 7));
   else addTrees(-view.H, z0 - 40);
 
-  for (let k = 1; k <= th.streetcars; k++) addStreetcar(z0 + (end - z0) * k / (th.streetcars + 1));
+  if (hazardUnlocked('streetcar')) for (let k = 1; k <= (th.streetcars || 0); k++) addStreetcar(z0 + (end - z0) * k / (th.streetcars + 1));
 
-  game.nextObstacleZ = z0 + (isFirstDay() ? CONFIG.graceTime * CONFIG.startSpeed : 300);
+  game.nextObstacleZ = z0 + (isFirstDay() ? CONFIG.graceTime * game.plan.speed : 300);
 
   const bz0 = game.routeEndZ + CONFIG.bonusGap;
-  const bonusSpeed = speedFor(game.day, CONFIG.housesPerSide * 2);
-  buildBonus(bz0, bz0 + CONFIG.bonusDuration * bonusSpeed);
+  const bonusSpeed = speedFor(game.day, game.plan.houses);
+  buildBonus(bz0, bz0 + game.plan.bonusSeconds * bonusSpeed);
   addLamps(-view.H, game.bonus.z1 + 400);
   addSidewalkDecor(-view.H, game.bonus.z1 + 400);
   clearScoringZones();
@@ -1434,7 +1507,7 @@ function buildBonus(z0, z1) {
   game.bonus = { z0, z1, clean: true };
   game.lines.push({ z: z0 }, { z: z1 });
   const rng = mulberry32(game.street[0].seed + game.day * 131 + game.week * 977);
-  const speed = speedFor(game.day, CONFIG.housesPerSide * 2);
+  const speed = speedFor(game.day, game.plan.houses);
 
   for (const side of [-1, 1]) {
     let z = game.routeEndZ + 40 + (side > 0 ? CONFIG.houseInterval * speed * 0.5 : 0);
@@ -1473,10 +1546,10 @@ function buildBonus(z0, z1) {
         addJump(z, weightedPick(B.jumps, rng), rng);
         z += 380;
         break;
-      case 'targets': {   // alternating sides, at least targetMinGap seconds apart on the same side
-        const step = Math.max(100, CONFIG.targetMinGap * speed / 2);
-        for (let i = 0; i < 3; i++) { addTargets(side, z + i * step, weightedPick(B.targets, rng)); side = -side; }
-        z += step * 3 + 60;
+      case 'targets': {   // alternating sides, at least targetMinGap seconds apart on the same side (more each week)
+        const step = Math.max(100, CONFIG.targetMinGap * speed / 2), n = game.plan.bonusTargets;
+        for (let i = 0; i < n; i++) { addTargets(side, z + i * step, weightedPick(B.targets, rng)); side = -side; }
+        z += step * n + 60;
         break;
       }
       case 'slalom':
@@ -1519,30 +1592,136 @@ function targetBox(t) {
   return [t.lx - hx, t.lx + hx, t.z - hz, t.z + hz];
 }
 
+// --- Which hazards today: the neighborhood's mix, limited to what has been
+// introduced so far (week 1), plus the extras on Sundays and later weeks. ---
+function hazardUnlocked(type) { return game.week > 1 || (CONFIG.DIFFICULTY.unlockDay[type] ?? 0) <= game.day; }
+function hazardMix() {
+  const D = CONFIG.DIFFICULTY, mix = {};
+  for (const [k, w] of Object.entries(theme().obstacles)) if (hazardUnlocked(k)) mix[k] = w;
+  if (game.week > 1 || game.day === 6) for (const [k, w] of Object.entries(D.extraHazards)) if (hazardUnlocked(k)) mix[k] = Math.max(mix[k] || 0, w);
+  if (game.week === 1) for (const [k, d] of Object.entries(D.unlockDay)) if (d === game.day && k !== 'streetcar') mix[k] = Math.max(mix[k] || 0, D.introWeight);
+  if (!theme().paved) delete mix.median, delete mix.traffic;   // boulevard pieces stay on the Plaza
+  return mix;
+}
+
+// Spawns one hazard (or, from week 2, sometimes a combo of two) at z, but
+// only if the bike can still get through: see pathOpen().
 function spawnAhead() {
   const ahead = game.dist + view.bikeY + CONFIG.spawnMargin;
   const stop = game.routeEndZ - 120;
   while (game.nextObstacleZ < ahead && game.nextObstacleZ < stop) {
-    if (!nearTrack(game.nextObstacleZ)) {
-      // Whatever spawns must not land on the rails or on top of a vehicle.
-      const n = game.obstacles.length;
-      spawnObstacle(game.nextObstacleZ);
-      const added = game.obstacles.splice(n);
-      if (added.every((o) => !onTracks(o) && !overlapsVehicle(o))) game.obstacles.push(...added);
+    const z = game.nextObstacleZ;
+    if (!nearTrack(z)) {
+      const tryGroup = (pattern) => {
+        const n = game.obstacles.length;
+        if (pattern) spawnPattern(z, pattern); else spawnObstacle(z);
+        const added = game.obstacles.splice(n);
+        // Never on the rails, on top of a vehicle, or so that every path is blocked.
+        if (!added.length || !added.every((o) => !onTracks(o) && !overlapsVehicle(o))) return 0;
+        if (!pathOpen(added)) { game.spawnLog.rejected++; return -1; }
+        game.obstacles.push(...added);
+        for (const o of added) { const k = hazardKey(o); game.spawnLog.spawned[k] = (game.spawnLog.spawned[k] || 0) + 1; }
+        if (pattern) game.spawnLog.patterns++;
+        return 1;
+      };
+      const pattern = Math.random() < game.plan.patternChance ? pickPattern() : null;
+      if (tryGroup(pattern) < 0) { game.spawnLog.retried++; tryGroup(null); }   // blocked: one simpler try
     }
     game.nextObstacleZ += obstacleGap() * rand(0.75, 1.25);
   }
 }
-
-function obstacleGap() {
-  const gap = CONFIG.obstacleGapStart * Math.pow(CONFIG.obstacleGapMul, game.day + game.level);
-  const weekly = Math.pow(CONFIG.weekObstacleMul, game.week - 1);
-  return Math.max(CONFIG.obstacleGapFloor, Math.max(CONFIG.obstacleGapMin, gap) * theme().obstacleGapScale * weekly);
+function hazardKey(o) { return o.pull ? 'pullout' : o.type; }
+function pickPattern() {
+  const ok = CONFIG.DIFFICULTY.patterns.filter(([a, b]) => game.mix[a] && game.mix[b]);
+  return ok.length ? pick(ok) : null;
+}
+function spawnPattern(z, [a, b]) {
+  const side = Math.random() < 0.5 ? -1 : 1;
+  spawnObstacle(z, a, side);
+  const gap = rand(game.plan.patternGap[0], game.plan.patternGap[1]) * speedFor(game.day, game.housesPassedToday);
+  spawnObstacle(z + Math.max(CONFIG.obstacleGapFloor * 0.6, gap), b, -side);   // the second one on the other side
 }
 
-function spawnObstacle(z) {
-  const type = weightedPick(theme().obstacles);
-  const side = Math.random() < 0.5 ? -1 : 1;
+// Seconds between obstacles (DIFFICULTY), turned into road distance at today's speed.
+function obstacleGap() {
+  const D = CONFIG.DIFFICULTY;
+  const secs = Math.max(D.minObstacleGap, game.plan.obstacleGap * Math.pow(D.obstacleGapPerLevel, game.level));
+  return Math.max(CONFIG.obstacleGapFloor, secs * speedFor(game.day, game.housesPassedToday));
+}
+
+// --- Fairness: is there always a way through? ---
+// Each hazard becomes the strip of road the bike's centre can't be in while
+// it passes (moving ones where they will be when you get there). Sweeping up
+// the road, the reachable part of the road grows by what you can steer in
+// that distance and loses the blocked strips. If it ever runs out, the
+// new spawn is refused.
+function dangerRects(o) {
+  const f = CONFIG.hitForgiveness, hx = (w) => (w / 2 + PLAYER.hw) * f + 3, hz = (h) => (h / 2 + PLAYER.hl) * f + 2;
+  const sp = Math.max(80, speedFor(game.day, game.housesPassedToday));
+  const ahead = Math.max(0, o.z - game.dist);
+  const rect = (x0, x1, zc, half) => ({ x0, x1, z0: zc - half, z1: zc + half });
+  switch (o.type) {
+    case 'streetcar': return [];   // a timed crossing; nothing ever spawns near the rails
+    case 'dog': case 'fan': {
+      if (o.sit) return [];
+      const t = o.active ? ahead / sp : o.lead;   // seconds it will have run when you reach it
+      const xa = o.x + o.dir * o.speed * Math.max(0, t - 0.2), xb = o.x + o.dir * o.speed * (t + 0.2);
+      return [rect(Math.min(xa, xb) - hx(o.w), Math.max(xa, xb) + hx(o.w), o.z, hz(o.h))];
+    }
+    case 'jogger': {   // runs toward you: you meet it further down the road
+      const meet = o.z - CONFIG.joggerSpeed * ahead / (sp + CONFIG.joggerSpeed);
+      return [rect(o.baseX - 10 - hx(o.w), o.baseX + 10 + hx(o.w), meet, hz(o.h) + 30)];
+    }
+    case 'skater': {   // rolls away from you while weaving
+      const meet = o.z + CONFIG.skaterSpeed * ahead / Math.max(40, sp - CONFIG.skaterSpeed);
+      const w = CONFIG.skaterWeave + hx(o.w);
+      return [{ x0: o.baseX - w, x1: o.baseX + w, z0: o.z - hz(o.h), z1: meet + hz(o.h) + 30 }];
+    }
+    case 'traffic': {   // its whole trip up its lane until you pass it
+      const trip = o.cruise * ahead / Math.max(20, sp - o.cruise);
+      return [{ x0: o.x - hx(o.w), x1: o.x + hx(o.w), z0: o.z - hz(o.h), z1: o.z + trip + hz(o.h) }];
+    }
+    default: {
+      const x = o.pull ? o.pull.to : o.x;   // a backing-out car: where it stops
+      return [rect(x - hx(o.w), x + hx(o.w), o.z, hz(o.h))];
+    }
+  }
+}
+function pathOpen(added) {
+  const lo = L.bikeMinX, hi = L.bikeMaxX, D = CONFIG.DIFFICULTY;
+  const zs = added.map((o) => o.z), zA = Math.min(...zs) - 600, zB = Math.max(...zs) + 600;
+  const rects = [];
+  for (const o of game.obstacles.concat(added)) for (const r of dangerRects(o)) if (r.z1 > zA && r.z0 < zB) rects.push(r);
+  if (!rects.length) return true;
+  const sp = Math.max(80, speedFor(game.day, game.housesPassedToday)), STEP = 6, grow = D.fairSteerSpeed * STEP / sp;
+  let reach = [[lo, hi]];
+  for (let z = zA; z <= zB; z += STEP) {
+    const next = [];
+    for (const [a, b] of reach) {   // steer sideways, merging what overlaps
+      const na = Math.max(lo, a - grow), nb = Math.min(hi, b + grow);
+      if (next.length && na <= next[next.length - 1][1]) next[next.length - 1][1] = Math.max(next[next.length - 1][1], nb);
+      else next.push([na, nb]);
+    }
+    reach = next;
+    for (const r of rects) {
+      if (z < r.z0 || z > r.z1) continue;
+      const cut = [];
+      for (const [a, b] of reach) {
+        if (r.x1 <= a || r.x0 >= b) { cut.push([a, b]); continue; }
+        if (r.x0 - a >= 1) cut.push([a, r.x0]);
+        if (b - r.x1 >= 1) cut.push([r.x1, b]);
+      }
+      reach = cut;
+    }
+    if (!reach.length) return false;
+  }
+  return true;
+}
+
+function spawnObstacle(z, forceType, forceSide) {
+  let type = forceType || weightedPick(game.mix);
+  const side = forceSide || (Math.random() < 0.5 ? -1 : 1);
+  if (type === 'pullout' && !spawnPullout(z, side)) type = 'car';   // no driveway nearby: a parked car instead
   switch (type) {
     case 'dog':
     case 'fan':   // Game Day fans dart across like dogs do
@@ -1590,6 +1769,29 @@ function spawnObstacle(z) {
     case 'median':   // planted island with a fountain in the middle of the road
       game.obstacles.push({ type, z, x: view.W / 2, w: 40, h: 90 });
       break;
+  }
+}
+// A car backs out of a driveway near z (either side, nearest first) and stops
+// in the curb lane, well before you get there. It flashes a "!" first.
+function spawnPullout(z, side) {
+  for (const s of [side, -side]) {
+    const d = game.driveways.filter((dw) => dw.side === s && Math.abs((dw.z0 + dw.z1) / 2 - z) < 140)
+      .sort((a, b) => Math.abs((a.z0 + a.z1) / 2 - z) - Math.abs((b.z0 + b.z1) / 2 - z))[0];
+    if (!d) continue;
+    game.obstacles.push({
+      type: 'car', cross: true, z: (d.z0 + d.z1) / 2, x: sideX(s, 92), w: 70, h: 30, color: pick(COLORS.cars),
+      pull: { to: sideX(s, 150), state: 'wait' },
+    });
+    return true;
+  }
+  return false;
+}
+function updatePullout(o, dt) {
+  const tta = (o.z - game.dist) / Math.max(game.speed, 1);
+  if (o.pull.state === 'wait' && tta < CONFIG.pulloutLead) { o.pull.state = 'move'; sfx.honk(); }
+  if (o.pull.state === 'move') {
+    const dir = Math.sign(o.pull.to - o.x), nx = o.x + dir * CONFIG.pulloutSpeed * dt;
+    if ((nx - o.pull.to) * dir >= 0) { o.x = o.pull.to; o.pull.state = 'done'; } else o.x = nx;
   }
 }
 
@@ -1702,6 +1904,8 @@ function update(dt) {
       o.x = o.baseX + Math.sin(o.phase + game.time * 1.3) * 10;
     } else if (o.type === 'traffic') {
       updateTraffic(o, dt);
+    } else if (o.pull) {
+      updatePullout(o, dt);
     } else if (o.type === 'car' && !o.cross && !o.honked && o.z > game.dist &&
                (o.z - game.dist) / game.speed < CONFIG.honkLead && Math.abs(o.x - bike.x) < 60) {
       o.honked = true;   // honks as you come up on it
@@ -1711,6 +1915,8 @@ function update(dt) {
     }
     if (bike.airT <= 0 && bike.invuln <= 0 && overlapsBike(o, CONFIG.hitForgiveness)) { crash(o); return; }
   }
+
+  announceHazards();
 
   if (isFirstDay() && !game.warnedObstacles && game.time >= CONFIG.graceTime) {
     game.warnedObstacles = true;
@@ -1749,6 +1955,29 @@ function update(dt) {
 
   spawnAhead();
   despawnBehind();
+}
+
+// "NEW: ..." the first time each kind of hazard rolls onto the screen (saved).
+const HAZARD_INTRO = {   // titles stay short ("NEW: " + 12 letters max) so the banner fits
+  pothole: ['POTHOLES', 'STEER AROUND THEM'], car: ['PARKED CARS', 'PASS ON THE OPEN SIDE'],
+  dog: ['DOGS', 'THEY DASH OUT AFTER THE !'], cone: ['CONES', 'ROADWORK CLOSES A LANE'],
+  jogger: ['JOGGERS', 'RUNNING RIGHT AT YOU'], traffic: ['TRAFFIC', 'SLOWER CARS: PASS THEM'],
+  median: ['FOUNTAINS', 'ISLANDS IN THE ROAD'], pullout: ['BACKING CARS', 'WATCH THE DRIVEWAYS'],
+  skater: ['SKATERS', 'THEY WEAVE SIDE TO SIDE'], streetcar: ['STREETCAR', 'LISTEN FOR THE BELL'],
+  fan: ['CROWDS', 'GAME DAY FANS DART ACROSS'],
+};
+function announceHazards() {
+  if (game.phase !== 'route' || game.tutorial) return;
+  for (const o of game.obstacles) {
+    const k = hazardKey(o);
+    if (!HAZARD_INTRO[k] || progress.hazardsSeen[k]) continue;
+    const y = sy(o.z);
+    if (y < view.H * 0.35 || y > view.bikeY) continue;   // well onto the screen (below the banner), still ahead of you
+    progress.hazardsSeen[k] = 1;
+    saveProgress();
+    const [name, tip] = HAZARD_INTRO[k];
+    pushBanner(`NEW: ${name}`, tip, COLORS.perfect, CONFIG.bannerTime);
+  }
 }
 
 function updateStreetcar(o, dt) {
@@ -3952,6 +4181,11 @@ function drawObstacle(o, t) {
       break;
     case 'traffic':
     case 'car': {
+      if (o.pull && o.pull.state !== 'done') {   // backing out: drawn live while it moves, "!" before
+        drawCrossCar(o);
+        if (o.pull.state === 'wait' && (o.z - game.dist) / Math.max(game.speed, 1) < CONFIG.pulloutWarn) drawSprite(SPR.bang, o.x + Math.round(Math.sin(t * 15)) * ps, y - 30);
+        break;
+      }
       if (o.cross) { cachedAt(`xcar|${o.x}|${o.color}|${o.w}|${o.h}`, -o.h / 2 - 8, o.h / 2 + 2, 30, o.z, () => drawCrossCar({ ...o, z: 0 }), o.x - o.w / 2 - 8, o.x + o.w / 2 + 8); break; }
       const cx = Math.round(o.x / 2) * 2;
       cachedAt(`car|${cx}|${o.color}|${o.w}|${o.h}`, -o.h / 2 - 8, o.h / 2 + 2, 30, o.z, () => drawCarBody({ ...o, x: cx, z: 0 }), cx - o.w / 2 - 8, cx + o.w / 2 + 8);
@@ -4530,12 +4764,12 @@ function showDaySummary() {
   const s = game.stats;
 
   for (const t of game.street) t.newSub = false;
+  const nextDay = (game.day + 1) % DAY_NAMES.length, nextWeek = nextDay === 0 ? game.week + 1 : game.week;
   if (s.perfect) {
-    const free = game.street.filter((t) => !t.sub);
+    const free = daySlots(nextDay, nextWeek).filter((t) => !t.sub);
     if (free.length) { const t = pick(free); t.sub = true; t.newSub = true; s.added = 1; }
   }
-  const subsNext = game.street.filter((t) => t.sub).length;
-  const nextDay = (game.day + 1) % DAY_NAMES.length;
+  const subsNext = subsPlanned(nextDay, nextWeek);
 
   checkUnlocks();
   const name = DAY_NAMES[game.day];
@@ -5359,7 +5593,7 @@ function renderShop() {
   shopUI.tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('sel', b.dataset.tab === shopTab));
   shopUI.debugBtn.classList.toggle('hidden', !debug.hitAreas);
   shopUI.grid.innerHTML = '';
-  shopUI.note.textContent = shopTab === 'outfits' ? `Outfits for ${curRider().name}. Cosmetic only.` : shopTab === 'coins' ? 'Real-money purchases (placeholder store).' : shopTab === 'bikes' ? 'Paint jobs fit any bike. Bike models (perks) are earned in the Garage.' : 'Cosmetic only. Same speed and controls.';
+  shopUI.note.textContent = shopTab === 'outfits' ? `Outfits for ${curRider().name}. Cosmetic only.` : shopTab === 'coins' ? (RELEASE_BUILD ? 'Coin packs and Remove Ads: coming soon.' : 'Real-money purchases (placeholder store).') : shopTab === 'bikes' ? 'Paint jobs fit any bike. Bike models (perks) are earned in the Garage.' : 'Cosmetic only. Same speed and controls.';
   if (shopTab === 'coins') { renderStore(); return; }
   for (const it of shopItems(shopTab)) {
     const card = document.createElement('div');
@@ -5417,7 +5651,7 @@ function renderStore() {
         if (prod.coins) { giveCoins(prod.coins); shopUI.msg.textContent = `+${prod.coins.toLocaleString('en-US')} coins!`; }
         else shopUI.msg.textContent = `${prod.title}: done. Thanks!`;
         renderShop();
-      }, (why) => { if (why !== 'cancelled') shopUI.msg.textContent = `Purchase failed: ${why}`; });
+      }, (why) => { if (why !== 'cancelled') shopUI.msg.textContent = why === 'store unavailable' ? 'Store coming soon!' : `Purchase failed: ${why}`; });
     });
     card.appendChild(b);
     shopUI.grid.appendChild(card);
@@ -5438,7 +5672,8 @@ document.querySelectorAll('.restore-btn').forEach((b) => b.addEventListener('cli
   e.stopPropagation();
   sfx.click();
   Monetization.restorePurchases((list) => {
-    const msg = list.length ? `Restored: ${list.join(', ')} (placeholder)` : 'Nothing to restore (placeholder)';
+    const tag = RELEASE_BUILD ? '' : ' (placeholder)';
+    const msg = list.length ? `Restored: ${list.join(', ')}${tag}` : `Nothing to restore${tag}`;
     document.querySelectorAll('.restore-msg').forEach((m) => { m.textContent = msg; });
   });
 }));
@@ -5676,7 +5911,7 @@ function spawnPowerups(dt) {
   if (game.phase !== 'route' || game.tutorial) return;
   game.powerClock += dt;
   if (game.powerClock < game.nextPowerAt) return;
-  game.nextPowerAt = game.powerClock + rand(CONFIG.powerEvery[0], CONFIG.powerEvery[1]);
+  game.nextPowerAt = game.powerClock + rand(CONFIG.powerEvery[0], CONFIG.powerEvery[1]) * game.plan.powerEvery;
   const z = game.dist + view.bikeY + CONFIG.spawnMargin * 0.5;
   if (z > game.routeEndZ - 150 || nearTrack(z)) { game.nextPowerAt = game.powerClock + 2; return; }
   const xs = [];
@@ -5875,7 +6110,7 @@ document.getElementById('garage-shop').addEventListener('click', (e) => { e.stop
 // and to a front-view figure used for portraits and cutscenes. Cutscenes are
 // small pixel scenes drawn into the art buffer, with a typewriter dialogue
 // box on top: tap to advance, SKIP in the corner. Progress (rider, medals,
-// cutscenes seen, furthest week) is saved in localStorage.
+// cutscenes seen, furthest week) is saved (SaveStore: Preferences in the app, localStorage on the web).
 // ---------------------------------------------------------------------
 const RIDER_KEY = 'routeRush.rider';
 const PROGRESS_KEY = 'routeRush.progress';
@@ -6105,10 +6340,11 @@ SPR.key = spriteFromArt([
 
 // --- Saved choices + progress ---
 const progress = (() => {
-  const base = { seen: {}, medals: {}, furthest: 0, weeksDone: 0, perfectDays: 0, unlocked: {} };
+  const base = { seen: {}, medals: {}, furthest: 0, weeksDone: 0, perfectDays: 0, unlocked: {}, hazardsSeen: {} };
   try {
-    const p = { ...base, ...JSON.parse(storage.get(PROGRESS_KEY, '{}')) };
-    for (const k of ['seen', 'medals', 'unlocked']) if (!p[k] || typeof p[k] !== 'object') p[k] = {};
+    const saved = JSON.parse(storage.get(PROGRESS_KEY, '{}')), p = { ...base, ...saved };
+    if (!saved.hazardsSeen && p.weeksDone >= 1) p.hazardsSeen = Object.fromEntries(Object.keys(CONFIG.DIFFICULTY.unlockDay).map((k) => [k, 1]));
+    for (const k of ['seen', 'medals', 'unlocked', 'hazardsSeen']) if (!p[k] || typeof p[k] !== 'object') p[k] = {};
     return p;
   } catch (e) { return base; }
 })();

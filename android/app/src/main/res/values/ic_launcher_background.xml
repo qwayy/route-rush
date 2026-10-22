@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#1A1C2C</color>
+    <!-- Launch screen background (Android 12+), the game's dark navy -->
+    <color name="splashBackground">#1A1C2C</color>
+</resources>

@@ -1,0 +1,10 @@
+node_modules/
+www/
+
+# Release signing: NEVER commit keys or passwords (they live in D:\Android\keys)
+*.jks
+*.keystore
+*.p12
+keystore.properties
+*-keystore.properties
+signing.properties

@@ -1,0 +1,8 @@
+{
+  "appId": "com.qwaysarproductions.routerush",
+  "appName": "Route Rush KC",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#1a1c2c"
+  }
+}
