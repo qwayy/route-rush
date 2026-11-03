@@ -198,6 +198,12 @@ h2 { font-size: 20px; font-weight: 400; text-transform: uppercase; color: var(--
 .rider-grid button canvas { width: 54px; height: 54px; }
 .rider-grid button.sel { border-color: var(--gold); color: var(--gold); }
 #screen-rider .share.small, #screen-medals .share.small { margin-top: 8px; }
+.power-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; text-align: left; }
+.power-item { display: flex; align-items: center; gap: 10px; padding: 8px; border: 3px solid #1a1c2c; background: #222a3a; }
+.power-item canvas { flex: none; width: 44px; height: 44px; image-rendering: pixelated; }
+.power-item b { display: block; font-size: 9px; font-weight: 400; }
+.power-item span { display: block; margin-top: 5px; font: 11px/1.35 system-ui, sans-serif; color: #d9dde6; }
+.power-note { margin-top: 10px; }
 .medal-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 16px 0; }
 .medal { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 7px; }
 .medal canvas { width: 42px; height: 60px; }

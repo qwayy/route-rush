@@ -5935,6 +5935,37 @@ function collectPowerups() {
   }
   compact(game.powerups, (p) => !p.taken && p.z > game.dist - view.H);
 }
+// Start screen: what each power-up does (icons are the real pickup sprites).
+const POWER_INFO = {
+  shield: () => 'Saves you from your next crash. Lasts until it does, or until the day ends.',
+  magnet: () => `For ${CONFIG.powerTime.magnet} seconds your papers curve into the nearest subscriber's mailbox: easy big points.`,
+  double: () => `Every point counts double for ${CONFIG.powerTime.double} seconds, on the route and the bonus course.`,
+  slowmo: () => `For ${CONFIG.powerTime.slowmo} seconds the world slows to ${Math.round(CONFIG.slowmoScale * 100)}% speed. Your steering and throws stay full speed.`,
+  storm: () => `For ${CONFIG.powerTime.storm} seconds every throw sends papers to BOTH sides at once.`,
+};
+function showPowers() {
+  game.state = 'menu';
+  const list = document.getElementById('power-list');
+  list.innerHTML = '';
+  for (const k of Object.keys(POWER_INFO)) {
+    const row = document.createElement('div');
+    row.className = 'power-item';
+    const spr = SPR['power_' + k], c = document.createElement('canvas');
+    c.width = spr.width; c.height = spr.height;
+    c.getContext('2d').drawImage(spr, 0, 0);
+    const txt = document.createElement('div');
+    txt.innerHTML = `<b></b><span></span>`;
+    txt.querySelector('b').textContent = POWER_NAMES[k];
+    txt.querySelector('b').style.color = POWER_COLORS[k];
+    txt.querySelector('span').textContent = POWER_INFO[k]();
+    row.append(c, txt);
+    list.appendChild(row);
+  }
+  showPanel(document.getElementById('screen-powers'));
+}
+document.getElementById('powers-btn').addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showPowers(); });
+document.getElementById('powers-back').addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showTitle(); });
+
 function drawPowerup(p, t) {   // floating pickup (drawn in depth order with the world)
   {
     const y = sy(p.z);
