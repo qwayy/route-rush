@@ -269,10 +269,12 @@ const CONFIG = {
   coinsPerfectDay: 25,
   coinsBonusFinish: 10,      // reaching the end of the bonus course
   trailRate: 28,             // trail particles per second (shop trails)
+  paintCycleTime: 2.5,       // seconds between looks on the CHAMELEON paint
   shopPrices: {              // coins; RARE items cost more
     outfit1: 300, outfit2: 500, outfitRare: 1500,
     'bike:red': 100, 'bike:kcblue': 200, 'bike:neon': 300, 'bike:mint': 400, 'bike:pink': 500, 'bike:bmx': 700, 'bike:chrome': 1200, 'bike:gold': 2000,
     'bike:flames': 5000, 'bike:galaxy': 10000, 'bike:lightning': 20000, 'bike:diamond': 35000, 'bike:rainbow': 50000,   // LEGENDARY
+    'bike:chameleon': 100000,   // ULTIMATE
     'paper:comic': 300, 'paper:pizza': 600, 'paper:glow': 1200, 'paper:gold': 2000,
     'trail:smoke': 250, 'trail:leaves': 400, 'trail:confetti': 700, 'trail:sparkles': 1500,
   },
@@ -663,7 +665,7 @@ let best = parseInt(storage.get(BEST_KEY, '0'), 10) || 0;
 
 function resetGame() {
   Object.assign(game, {
-    score: 0, lives: CONFIG.lives, day: 0, week: 1, totalDelivered: 0,
+    score: 0, lives: CONFIG.lives, day: 0, week: 1, runDay: 0, totalDelivered: 0,
     street: buildStreet(),
     overTitle: '', overReason: '', overShownAt: 0, runCoins: 0, continued: false, coinBump: 0,
     powerClock: 0, nextPowerAt: rand(CONFIG.powerEvery[0], CONFIG.powerEvery[1]),   // route time, carried across days
@@ -1871,6 +1873,7 @@ function update(dt) {
   for (const r of game.ramps) {
     if (!r.used && bike.airT <= 0 && overlapsBike(r, 0.8)) {
       r.used = true;
+      achAdd('jumps');
       bike.airT = bike.airMax = CONFIG.jumpTime;
       bike.airH = CONFIG.jumpHeight;
       popText('AIR!', bike.x, game.dist + 60, COLORS.perfect, 22);
@@ -2029,6 +2032,7 @@ function finishRoute() {
   if (s.perfect) {
     progress.perfectDays = (progress.perfectDays || 0) + 1;
     saveProgress();
+    achAdd('perfect');
     s.perfectBonus = s.routePoints * (CONFIG.perfectMultiplier - 1);
     game.score += s.perfectBonus;
     addCoins(CONFIG.coinsPerfectDay);
@@ -2041,6 +2045,7 @@ function finishRoute() {
 
 function finishBonus() {
   game.stats.bonusClean = game.bonus.clean;
+  if (game.bonus.clean) achAdd('bonusClear');
   addCoins(CONFIG.coinsBonusFinish);
   if (game.bonus.clean) {
     addPoints(bonusPts(CONFIG.pointsBonusClear));
@@ -2296,6 +2301,7 @@ function applyPaperHit(p, hit) {
     case 'target':
       hit.t.hit = true;
       s.targets++;
+      achAdd('targets');
       sfx.ping();
       popText(`+${addPoints(bonusPts(CONFIG.pointsBonusTarget))} TARGET!`, x, z, COLORS.perfect, 24);
       burst(x, z, { fountain: COLORS.waterLight, smoker: COLORS.smoke, newsstand: COLORS.paper }[hit.t.kind] || COLORS.bad, 12, 130);
@@ -2365,6 +2371,7 @@ function deliverTo(h, kind, x, z) {
   addPoints(pts);
   addCoins({ mailbox: CONFIG.coinsMailbox, porch: CONFIG.coinsPorch, property: CONFIG.coinsProperty }[kind]);
   sfx[kind](game.combo++);   // success blip climbs with each delivery in a row
+  achBest('streak', game.combo);
   popText(`+${pts} ${d.label}`, x, z, d.color, d.size);
   const king = riderHas('comboKing');
   if (king && game.combo % CONFIG.comboKingStep === 0) game.comboShield = CONFIG.comboKingForgive;
@@ -2372,6 +2379,7 @@ function deliverTo(h, kind, x, z) {
   burst(x, z, d.color, CONFIG.particleCount + (kind === 'mailbox' ? 6 : 0), kind === 'mailbox' ? 150 : 110);
   if (kind === 'mailbox') {
     game.stats.mailbox++;
+    achAdd('mailboxes');
     progress.mailboxes = (progress.mailboxes || 0) + 1;
     saveProgress();
     game.shake = Math.max(game.shake, CONFIG.shakeMailbox);
@@ -2393,6 +2401,7 @@ function breakWindow(h, idx, x, z) {
     popText('OOPS! SUBSCRIBER', x, z, COLORS.bad, 20);
     game.flash = 0.3; game.flashColor = COLORS.bad;
   } else {
+    achAdd('windows');
     addPoints(CONFIG.pointsVandalWindow);
     popText(`+${CONFIG.pointsVandalWindow} CRASH!`, x, z, COLORS.glass, 22);
   }
@@ -2468,7 +2477,7 @@ function nearestWindow(h, z) {
 }
 
 function canDeliver(h) { return h.sub && !h.delivered; }
-function deliver(h) { h.delivered = true; game.stats.deliveries++; game.totalDelivered++; }
+function deliver(h) { h.delivered = true; game.stats.deliveries++; game.totalDelivered++; achAdd('deliveries'); }
 function dropPaper(p, lx) {
   if (game.groundPapers.length >= CONFIG.maxGroundPapers) game.groundPapers.shift();   // oldest goes
   game.groundPapers.push({ x: sideX(p.side, lx), z: p.z, rot: p.rot });
@@ -4412,10 +4421,15 @@ function drawBike(_, t) {
   const steady = hasModel('cruiser') ? CONFIG.cruiserLean : 1;
   const wob = bike.wobble > 0 ? Math.sin(t * 38) * 0.35 * bike.wobble / CONFIG.secondWindWobble : 0;   // crash save
   const lean = Math.round(((clamp(bike.vx * CONFIG.leanPerSpeed, -CONFIG.maxLean, CONFIG.maxLean) + wob) * steady) / 0.1) * 0.1;
-  if (SPR.legendGlow) { pix.globalAlpha = 0.75 + 0.25 * Math.sin(t * 4); drawSpriteC(SPR.legendGlow, bike.x, view.bikeY - 6); pix.globalAlpha = 1; }
-  const anim = SPR.riderAnim && SPR.riderAnim[Math.floor(t * 10) % SPR.riderAnim.length];
+  const looks = SPR.bikeLooks, li = looks.length ? Math.floor(t / CONFIG.paintCycleTime) % looks.length : -1, lk = looks[li];
+  if (looks.length > 1 && li !== game.lookIdx) {   // CHAMELEON switching looks: a puff of the new colors
+    if (game.lookIdx !== undefined && !bike.crashed) for (const c of lk.spark) burst(bike.x, game.dist + 30, c, 5, 120);
+    game.lookIdx = li;
+  }
+  if (lk) { pix.globalAlpha = 0.75 + 0.25 * Math.sin(t * 4); drawSpriteC(lk.glow, bike.x, view.bikeY - 6); pix.globalAlpha = 1; }
+  const anim = lk && lk.anim[Math.floor(t * 10) % lk.anim.length];
   drawSprite(anim ? anim[pedal ? 1 : 0] : pedal ? SPR.riderBigB : SPR.riderBigA, bike.x, view.bikeY + PLAYER.hl - lift, bike.crashed ? bike.spin : lean);
-  if (anim && !bike.crashed) drawLegendFx(t, bike.x, view.bikeY - lift);
+  if (lk && !bike.crashed) drawLegendFx(t, bike.x, view.bikeY - lift, lk.spark);
   drawPowerFx(t, bike.x, view.bikeY - lift);
 }
 
@@ -4736,6 +4750,7 @@ function showTitle() {
   spinUIState();
   ui.titleBest.textContent = best;
   updateSteerUI();
+  achDot();
   showPanel(ui.title);
 }
 
@@ -4744,6 +4759,8 @@ function showGameOver() {
   game.overShownAt = performance.now();
   const isNewBest = game.score > best;
   if (isNewBest) { best = game.score; storage.set(BEST_KEY, best); }
+  achBest('score', game.score);
+  achSave();
   checkUnlocks();
 
   ui.overTitle.textContent = game.overTitle || 'Route over';
@@ -4775,6 +4792,10 @@ function showDaySummary() {
   }
   const subsNext = subsPlanned(nextDay, nextWeek);
 
+  achAdd('days');
+  achBest('reach', game.runDay + 1);
+  achBest('score', game.score);
+  achSave();
   checkUnlocks();
   const name = DAY_NAMES[game.day];
   ui.dayTitle.textContent = `${name[0]}${name.slice(1).toLowerCase()} done`;
@@ -4815,6 +4836,7 @@ function overUnlocked() { return performance.now() - game.overShownAt > CONFIG.r
 function continueFromSummary() {
   const finished = game.day === DAY_NAMES.length - 1 ? game.week : 0;
   game.day++;
+  game.runDay = (game.runDay || 0) + 1;
   if (game.day >= DAY_NAMES.length) { game.day = 0; game.week++; }   // keeps going forever
   setupDay();
   const go = () => {
@@ -5384,6 +5406,7 @@ function addCoins(n) {
   wallet += n;
   game.runCoins = (game.runCoins || 0) + n;
   if (game.stats) game.stats.coins = (game.stats.coins || 0) + n;
+  achAdd('coins', n);
   game.coinBump = 0.25;
   saveWallet();
 }
@@ -5423,6 +5446,8 @@ const BIKES = [
   { id: 'bike:lightning', name: 'LIGHTNING', frame: '#3a9bff', paint: ['#1a4fd0', '#3a9bff', '#ffffff', '#3a9bff', '#1a4fd0'], bar: '#ffffff', tire: '#101830', aura: '90,170,255', spark: ['#ffffff', '#8fe0ff', '#ffe95a'], legend: true },
   { id: 'bike:diamond', name: 'DIAMOND', frame: '#bff4ff', paint: ['#e8fbff', '#9fe7f5', '#ffffff', '#7fd0e8', '#d4f6ff'], bar: '#ffffff', tire: '#5a7a8a', aura: '170,240,255', spark: ['#ffffff', '#bff4ff', '#ffe9fb'], legend: true },
   { id: 'bike:rainbow', name: 'RAINBOW ROYALE', frame: '#ff5a5f', paint: ['#ff5a5f', '#ff9f43', '#ffd23f', '#7dff4f', '#2ec4b6', '#3a7bd5', '#9b5de5', '#f15bb5'], bar: '#ffffff', tire: '#1a1c2c', aura: '255,255,255', spark: ['#ff5a5f', '#ffd23f', '#7dff4f', '#2ec4b6', '#9b5de5', '#f15bb5'], legend: true },
+  // ULTIMATE: switches between every LEGENDARY look (`cycle`) every CONFIG.paintCycleTime seconds.
+  { id: 'bike:chameleon', name: 'CHAMELEON', frame: '#ff2a1f', paint: ['#ff2a1f', '#5b2a9e', '#3a9bff', '#bff4ff', '#7dff4f', '#f15bb5'], cycle: ['bike:flames', 'bike:galaxy', 'bike:lightning', 'bike:diamond', 'bike:rainbow'], bar: '#ffffff', tire: '#1a1c2c', legend: true, ultimate: true },
 ];
 // Frame color of a paint job at art pixel (x, y); `step` moves a LEGENDARY paint along.
 function paintIndex(b, x, y, step = 0) { const n = b.paint.length; return ((x + y + step) % n + n) % n; }
@@ -5598,7 +5623,7 @@ function equip(it) {
 function previewFor(it) {
   const [kind] = it.id.split(':');
   if (kind === 'outfit') return cloneCanvas(riderPerson(curRider(), { shirt: it.shirt, pants: it.pants, helmet: it.helmet, bag: true }));
-  if (kind === 'bike') return makeBikeIcon(it, bikeModel());
+  if (kind === 'bike') return it.cycle ? cycleIcon(it, bikeModel()) : makeBikeIcon(it, bikeModel());
   if (kind === 'paper') return makePaperIcon(it.id);
   return makeTrailIcon(it);
 }
@@ -5611,7 +5636,7 @@ function renderShop() {
   if (shopTab === 'coins') { renderStore(); return; }
   for (const it of shopItems(shopTab)) {
     const card = document.createElement('div');
-    card.className = 'shop-item' + (it.legend ? ' legend' : it.rare ? ' rare' : '');
+    card.className = 'shop-item' + (it.ultimate ? ' legend ultimate' : it.legend ? ' legend' : it.rare ? ' rare' : '');
     const pv = previewFor(it);
     pv.className = 'px ' + it.id.split(':')[0];
     card.appendChild(pv);
@@ -5619,7 +5644,7 @@ function renderShop() {
     name.className = 'shop-name';
     name.textContent = it.name;
     card.appendChild(name);
-    if (it.rare || it.legend) { const r = document.createElement('i'); r.textContent = it.legend ? 'LEGENDARY' : 'RARE'; card.appendChild(r); }
+    if (it.rare || it.legend) { const r = document.createElement('i'); r.textContent = it.ultimate ? 'ULTIMATE' : it.legend ? 'LEGENDARY' : 'RARE'; card.appendChild(r); }
     const b = document.createElement('button');
     b.type = 'button';
     const price = itemPrice(it);
@@ -5746,6 +5771,7 @@ function randomCosmetic() {
 function doSpin() {
   const P = CONFIG.spinPrizes, idx = P.indexOf(weightedPickObj(P));
   storage.set(SPIN_KEY, today());   // used up as soon as the reward is earned
+  achAdd('spins');
   spin.spinning = true;
   spinUIState();
   const n = P.length, start = spin.angle, turns = 5;
@@ -5905,6 +5931,22 @@ function makeBikeIcon(b, model = 'classic') {
   return c;
 }
 
+// CHAMELEON icon: a canvas that keeps switching to the next LEGENDARY look.
+function cycleIcon(b, model) {
+  const c = cloneCanvas(makeBikeIcon(b, model));
+  c.dataset.cycle = b.cycle.join(' ');
+  c.dataset.model = model;
+  return c;
+}
+setInterval(() => {
+  const k = Math.floor(performance.now() / 1000 / CONFIG.paintCycleTime);
+  for (const c of document.querySelectorAll('canvas[data-cycle]')) {
+    const ids = c.dataset.cycle.split(' '), src = makeBikeIcon(BIKES.find((b) => b.id === ids[k % ids.length]), c.dataset.model), g = c.getContext('2d');
+    g.clearRect(0, 0, c.width, c.height);
+    g.drawImage(src, 0, 0);
+  }
+}, 250);
+
 // Power-up sprites (9x9).
 const POWER_PAL = { k: PAL.k, b: '#3a7bd5', B: '#8fbfff', r: '#d64545', g: '#c0c6d0', a: '#ffd23f', Y: '#c9921e', w: '#f7f4ea', c: '#2ec4b6', e: PAL.e };
 const POWER_ART = {
@@ -5942,6 +5984,7 @@ function collectPowerups() {
   for (const p of game.powerups) {
     if (p.taken || Math.abs(p.x - bike.x) > PLAYER.hw + CONFIG.powerPickupR || Math.abs(p.z - game.dist) > PLAYER.hl + CONFIG.powerPickupR * 0.6) continue;
     p.taken = true;
+    achAdd('powerups');
     if (p.type === 'shield') game.shield = true;
     else game.power = { type: p.type, t: CONFIG.powerTime[p.type], max: CONFIG.powerTime[p.type] };
     sfx.power(p.type);
@@ -5980,6 +6023,9 @@ function showPowers() {
 }
 document.getElementById('powers-btn').addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showPowers(); });
 document.getElementById('powers-back').addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showTitle(); });
+document.getElementById('ach-btn').addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showAchievements(); });
+document.getElementById('ach-back').addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); showTitle(); });
+document.querySelectorAll('#ach-tabs button').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); achTab = b.dataset.tab; renderAchievements(); }));
 
 function drawPowerup(p, t) {   // floating pickup (drawn in depth order with the world)
   {
@@ -5998,8 +6044,7 @@ function drawPowerup(p, t) {   // floating pickup (drawn in depth order with the
 }
 // Visual on the bike for whatever is active.
 // LEGENDARY paint: sparkles that twinkle as they circle the bike.
-function drawLegendFx(t, x, y) {
-  const cols = equippedBike().spark;
+function drawLegendFx(t, x, y, cols) {
   for (let i = 0; i < 6; i++) {
     const an = t * 2.2 + i * 1.047, k = (t * 3 + i * 0.37) % 1;
     if (k > 0.7) continue;
@@ -6110,7 +6155,7 @@ const garUI = {
 function renderGarage() {
   const bk = equippedBike();
   garUI.preview.innerHTML = '';
-  const big = cloneCanvas(makeBikeIcon(bk, bikeModel()));
+  const big = bk.cycle ? cycleIcon(bk, bikeModel()) : cloneCanvas(makeBikeIcon(bk, bikeModel()));
   big.className = 'px side';
   garUI.preview.appendChild(big);
   const top = cloneCanvas(SPR.riderA);
@@ -6242,8 +6287,8 @@ const TOP_HAIR = {
   ponytail: [[7, 5, 'hh'], [8, 5, 'h'], [9, 4, 'H'], [10, 4, 'h']],
   ponytailB: [[7, 5, 'hh'], [8, 6, 'h'], [9, 7, 'H'], [10, 7, 'h']],
 };
-function riderTopSprite(r0, frame, step = 0) {
-  const r = look(r0), bk = equippedBike();
+function riderTopSprite(r0, frame, step = 0, bk = equippedBike()) {
+  const r = look(r0);
   const rows = SPRITE_ART[frame ? 'riderB' : 'riderA'].map((row) => row.split(''));
   for (let y = RIDER_TOP.length; y <= RIDER_TOP.length + 3; y++) rows[y] = rows[y].map((ch) => (ch === 'w' ? 'f' : ch));   // frame + rear fender in the bike color
   rows[1] = rows[1].map((ch) => (ch === 'w' ? 'f' : ch));   // front fender
@@ -6436,14 +6481,19 @@ function applyRider() {
   SPR.riderB = riderTopSprite(r, 1);
   SPR.riderBigA = outlined(scaleNN(SPR.riderA, CONFIG.PLAYER_SCALE));   // gameplay: bigger + 1px dark outline
   SPR.riderBigB = outlined(scaleNN(SPR.riderB, CONFIG.PLAYER_SCALE));
-  const bk = equippedBike();   // LEGENDARY paint: a pair of sprites per animation step, plus its glow
-  SPR.riderAnim = bk.paint ? bk.paint.map((_, i) => [0, 1].map((f) => outlined(scaleNN(riderTopSprite(r, f, i), CONFIG.PLAYER_SCALE)))) : null;
-  SPR.legendGlow = bk.aura ? spriteFromFn(30, 42, (px) => {
-    for (let y = 0; y < 42; y++) for (let x = 0; x < 30; x++) {
-      const d = ((x + 0.5 - 15) / 15) ** 2 + ((y + 0.5 - 21) / 21) ** 2;
-      if (d <= 1) px(x, y, `rgba(${bk.aura},${(0.5 * (1 - d)).toFixed(3)})`);
-    }
-  }) : null;
+  // LEGENDARY paint: per look, a pair of sprites for each animation step, its glow and sparkles.
+  // CHAMELEON has one look per LEGENDARY paint and switches between them.
+  const bk = equippedBike(), looks = bk.cycle ? bk.cycle.map((id) => BIKES.find((b) => b.id === id)) : bk.aura ? [bk] : [];
+  SPR.bikeLooks = looks.map((b) => ({
+    anim: b.paint.map((_, i) => [0, 1].map((f) => outlined(scaleNN(riderTopSprite(r, f, i, b), CONFIG.PLAYER_SCALE)))),
+    glow: spriteFromFn(30, 42, (px) => {
+      for (let y = 0; y < 42; y++) for (let x = 0; x < 30; x++) {
+        const d = ((x + 0.5 - 15) / 15) ** 2 + ((y + 0.5 - 21) / 21) ** 2;
+        if (d <= 1) px(x, y, `rgba(${b.aura},${(0.5 * (1 - d)).toFixed(3)})`);
+      }
+    }),
+    spark: b.spark,
+  }));
 }
 applyRider();
 function noteFurthest() {   // called each new day
@@ -6455,6 +6505,7 @@ function weekDone(w) {
   const m = MEDALS.find((md) => md.week === w);
   if (m) progress.medals[m.id] = 1;
   progress.weeksDone = Math.max(progress.weeksDone, w);
+  achBest('weeks', progress.weeksDone);
   const id = 'week' + w;
   const play = !progress.seen[id];
   progress.seen[id] = 1;
@@ -6985,6 +7036,18 @@ function pumpUnlocks() {
   if (!unlockQueue.length || game.state === 'cutscene') return;
   const r = unlockQueue.shift();
   selUI.pop.innerHTML = '';
+  if (r.ach) {
+    const ic = cloneCanvas(SPR[r.ach.daily ? 'achDaily' : 'trophy' + r.ach.tier]);
+    ic.className = 'px';
+    selUI.pop.appendChild(ic);
+    const t = document.createElement('div');
+    t.innerHTML = `<b>${r.ach.daily ? 'DAILY CHALLENGE!' : 'ACHIEVEMENT!'}</b><span>${r.ach.name}</span>${r.ach.text ? `<span class="pop-text">${r.ach.text}</span>` : ''}<span class="pop-coins"><i class="coin-ico"></i>+${r.ach.coins.toLocaleString('en-US')}</span>`;
+    selUI.pop.appendChild(t);
+    selUI.pop.classList.remove('hidden');
+    pop.until = now + CONFIG.unlockPopTime * 1000;
+    sfx.clear();
+    return;
+  }
   const pc = r.bikeModel ? cloneCanvas(makeBikeIcon(equippedBike(), r.bikeModel.id)) : makePortrait(r, '#1a1c2c');
   pc.className = 'px' + (r.bikeModel ? ' bikepop' : '');
   selUI.pop.appendChild(pc);
@@ -6995,6 +7058,174 @@ function pumpUnlocks() {
   pop.until = now + CONFIG.unlockPopTime * 1000;
   sfx.clear();
   if (game.state === 'menu' && !selUI.panel.classList.contains('hidden')) { buildRiderGrid(); updateRiderPreview(); }
+}
+
+// --- Achievements ---
+// Lifetime: tiers of totals kept forever. Daily: 3 challenges picked by the date
+// (same for everyone that day), reset at midnight. Rewards are paid in coins the
+// moment one is done, with a pop-up.
+const ACH_KEY = 'routeRush.achievements';
+const ACH_TIER_COINS = [100, 500, 2000, 5000];   // tier 1..4 reward
+const ACH_LIFE = [   // max: the best single value counts (not a running total)
+  { id: 'deliveries', name: 'PAPER CARRIER', text: (n) => `Deliver ${fmtN(n)} papers`, tiers: [50, 500, 2500, 10000] },
+  { id: 'mailboxes', name: 'MAILBOX MASTER', text: (n) => `Hit ${fmtN(n)} mailboxes`, tiers: [25, 250, 1000, 5000] },
+  { id: 'perfect', name: 'PERFECTIONIST', text: (n) => `Get ${fmtN(n)} Perfect Day${n === 1 ? '' : 's'}`, tiers: [1, 10, 50, 200] },
+  { id: 'days', name: 'ROAD WARRIOR', text: (n) => `Finish ${fmtN(n)} days`, tiers: [7, 50, 200, 500] },
+  { id: 'weeks', name: 'MARATHON', text: (n) => `Finish week ${n}`, tiers: [1, 5, 10, 25], max: true },
+  { id: 'score', name: 'HIGH SCORER', text: (n) => `Score ${fmtN(n)} in one run`, tiers: [25000, 100000, 250000, 1000000], max: true },
+  { id: 'streak', name: 'ON A ROLL', text: (n) => `${n} deliveries in a row`, tiers: [10, 25, 50, 100], max: true },
+  { id: 'windows', name: 'WINDOW SMASHER', text: (n) => `Break ${fmtN(n)} non-subscriber windows`, tiers: [10, 100, 500] },
+  { id: 'jumps', name: 'FREQUENT FLYER', text: (n) => `Jump ${fmtN(n)} ramps`, tiers: [10, 100, 500] },
+  { id: 'targets', name: 'SHARPSHOOTER', text: (n) => `Hit ${fmtN(n)} bonus targets`, tiers: [25, 250, 1000] },
+  { id: 'powerups', name: 'POWERED UP', text: (n) => `Grab ${fmtN(n)} power-ups`, tiers: [10, 100, 500] },
+  { id: 'coins', name: 'MONEY BAGS', text: (n) => `Earn ${fmtN(n)} coins on the route`, tiers: [1000, 10000, 100000] },
+  { id: 'spins', name: 'SPIN DOCTOR', text: (n) => `Use the Daily Spin ${n} times`, tiers: [7, 30, 100] },
+];
+const ACH_DAILY = [
+  { id: 'deliver', stat: 'deliveries', n: 40, text: 'Deliver 40 papers', coins: 150 },
+  { id: 'mail', stat: 'mailboxes', n: 12, text: 'Hit 12 mailboxes', coins: 200 },
+  { id: 'perfect', stat: 'perfect', n: 1, text: 'Get a Perfect Day', coins: 250 },
+  { id: 'windows', stat: 'windows', n: 5, text: 'Break 5 non-subscriber windows', coins: 150 },
+  { id: 'jumps', stat: 'jumps', n: 6, text: 'Jump 6 ramps', coins: 150 },
+  { id: 'power', stat: 'powerups', n: 4, text: 'Grab 4 power-ups', coins: 150 },
+  { id: 'days', stat: 'days', n: 3, text: 'Finish 3 days', coins: 200 },
+  { id: 'reach', stat: 'reach', n: 4, max: true, text: 'Finish 4 days in one run', coins: 250 },
+  { id: 'score', stat: 'score', n: 20000, max: true, text: 'Score 20,000 in one run', coins: 250 },
+  { id: 'streak', stat: 'streak', n: 15, max: true, text: '15 deliveries in a row', coins: 200 },
+  { id: 'targets', stat: 'targets', n: 10, text: 'Hit 10 bonus targets', coins: 150 },
+  { id: 'clear', stat: 'bonusClear', n: 1, text: 'Clear a bonus course', coins: 200 },
+];
+const ACH_DAILY_ALL = 300;   // bonus for finishing all three
+function fmtN(n) { return n.toLocaleString('en-US'); }
+
+// Trophy icons: tier 0 (not yet) to 4, plus the daily star.
+const TROPHY_ART = ['kkkkkkkkk', 'kaYaaaaak', 'kaYaaaaak', '.kaaaaak.', '..kaaak..', '...kak...', '...kak...', '..kkkkk..', '.kaaaaak.', '.kkkkkkk.'];
+[['#4a4f5a', '#6a707c'], ['#c97a3a', '#e8a86a'], ['#c0c6d0', '#ffffff'], ['#ffd23f', '#fff2a8'], ['#7fd0e8', '#ffffff']]
+  .forEach(([a, Y], i) => { SPR['trophy' + i] = spriteFromArt(TROPHY_ART, { k: PAL.k, a, Y }); });
+SPR.achDaily = spriteFromArt(['....k....', '...kak...', 'kkkkaakkk', 'kaaaaYaak', '.kaaaaak.', '..kaaak..', '.kaakaak.', '.kak.kak.', '.kk...kk.'], { k: PAL.k, a: '#2ec4b6', Y: '#bff4ff' });
+
+const ach = (() => {
+  let a = null;
+  try { a = JSON.parse(storage.get(ACH_KEY, 'null')); } catch (e) { a = null; }
+  a = a && typeof a === 'object' ? a : {};
+  return { life: a.life || {}, done: a.done || {}, day: a.day || null };
+})();
+let achSaveTimer = 0;
+function achSave() { clearTimeout(achSaveTimer); achSaveTimer = 0; storage.set(ACH_KEY, JSON.stringify(ach)); }
+function achSaveSoon() { if (!achSaveTimer) achSaveTimer = setTimeout(achSave, 2000); }
+
+// Today's three challenges: the same picks all day, from a seed made of the date.
+function achToday() {
+  const d = today();
+  if (!ach.day || ach.day.date !== d) {
+    let h = 2166136261;
+    for (const ch of d) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
+    const rng = () => ((h = Math.imul(h ^ (h >>> 15), 2246822507) ^ Math.imul(h ^ (h >>> 13), 3266489909)) >>> 0) / 4294967296;
+    const pool = ACH_DAILY.map((c) => c.id), ids = [];
+    while (ids.length < 3) ids.push(pool.splice(Math.floor(rng() * pool.length), 1)[0]);
+    ach.day = { date: d, ids, prog: {}, done: {}, all: false, seen: false };
+    achSaveSoon();
+  }
+  return ach.day;
+}
+function achDailyList() { const d = achToday(); return d.ids.map((id) => ACH_DAILY.find((c) => c.id === id)).filter(Boolean); }
+
+function achAdd(stat, n = 1) {
+  ach.life[stat] = (ach.life[stat] || 0) + n;
+  const d = achToday();
+  d.prog[stat] = (d.prog[stat] || 0) + n;
+  achCheck();
+}
+function achBest(stat, v) {
+  if (v > (ach.life[stat] || 0)) ach.life[stat] = v;
+  const d = achToday();
+  if (v > (d.prog['best:' + stat] || 0)) d.prog['best:' + stat] = v;
+  achCheck();
+}
+function achDailyProgress(c) { return achToday().prog[(c.max ? 'best:' : '') + c.stat] || 0; }
+function achTier(f) { return ach.done[f.id] || 0; }   // tiers finished
+
+function achCheck(silent) {
+  let paid = false;
+  const giveCoins = (n) => { wallet += n; saveWallet(); if (!silent) updateWalletUI(); };
+  for (const f of ACH_LIFE) {
+    while (achTier(f) < f.tiers.length && (ach.life[f.id] || 0) >= f.tiers[achTier(f)]) {
+      const tier = achTier(f) + 1, coins = ACH_TIER_COINS[tier - 1];
+      ach.done[f.id] = tier;
+      giveCoins(coins);
+      paid = true;
+      if (!silent) unlockQueue.push({ ach: { name: `${f.name} ${'I'.repeat(tier).replace('IIII', 'IV')}`, text: f.text(f.tiers[tier - 1]), coins, tier } });
+    }
+  }
+  const d = achToday();
+  for (const c of achDailyList()) {
+    if (d.done[c.id] || achDailyProgress(c) < c.n) continue;
+    d.done[c.id] = 1;
+    giveCoins(c.coins);
+    paid = true;
+    if (!silent) unlockQueue.push({ ach: { name: c.text, coins: c.coins, daily: true } });
+  }
+  if (!d.all && d.ids.every((id) => d.done[id])) {
+    d.all = true;
+    giveCoins(ACH_DAILY_ALL);
+    paid = true;
+    if (!silent) unlockQueue.push({ ach: { name: 'All three done today!', coins: ACH_DAILY_ALL, daily: true } });
+  }
+  if (paid) achSave(); else achSaveSoon();
+}
+// Progress from before achievements existed counts (paid out quietly).
+ach.life.mailboxes = Math.max(ach.life.mailboxes || 0, progress.mailboxes || 0);
+ach.life.perfect = Math.max(ach.life.perfect || 0, progress.perfectDays || 0);
+ach.life.weeks = Math.max(ach.life.weeks || 0, progress.weeksDone || 0);
+ach.life.score = Math.max(ach.life.score || 0, best || 0);
+achCheck(true);
+
+// --- Achievements screen ---
+let achTab = 'daily';
+function showAchievements() {
+  game.state = 'menu';
+  achToday().seen = true;
+  achSave();
+  achDot();
+  renderAchievements();
+  showPanel(document.getElementById('screen-ach'));
+}
+function achDot() { document.getElementById('ach-dot').classList.toggle('hidden', achToday().seen); }
+function achRow(icon, title, text, have, need, prize, done) {
+  const row = document.createElement('div');
+  row.className = 'ach-item' + (done ? ' done' : '');
+  const ic = cloneCanvas(icon);
+  ic.className = 'px';
+  row.appendChild(ic);
+  const info = document.createElement('div');
+  info.className = 'ach-info';
+  info.innerHTML = `<b>${title}</b><span>${text}</span>` + (done ? '' : `<div class="bar"><i style="width:${Math.round(Math.min(have / need, 1) * 100)}%"></i></div><em>${fmtN(Math.min(have, need))} / ${fmtN(need)}</em>`);
+  row.appendChild(info);
+  const pz = document.createElement('div');
+  pz.className = 'ach-prize';
+  pz.innerHTML = done ? '✓ DONE' : `<span class="coin-ico"></span>+${fmtN(prize)}`;
+  row.appendChild(pz);
+  return row;
+}
+function renderAchievements() {
+  document.querySelectorAll('#ach-tabs button').forEach((b) => b.classList.toggle('sel', b.dataset.tab === achTab));
+  const list = document.getElementById('ach-list'), sub = document.getElementById('ach-sub');
+  list.innerHTML = '';
+  if (achTab === 'daily') {
+    const d = achToday(), now = new Date(), mid = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    const mins = Math.max(1, Math.round((mid - now) / 60000));
+    sub.textContent = `New challenges in ${Math.floor(mins / 60)}h ${mins % 60}m. Finish all three for +${ACH_DAILY_ALL} more.`;
+    for (const c of achDailyList()) list.appendChild(achRow(SPR.achDaily, 'DAILY', c.text, achDailyProgress(c), c.n, c.coins, !!d.done[c.id]));
+    list.appendChild(achRow(SPR.trophy3, 'ALL THREE', 'Finish all of today\'s challenges', d.ids.filter((id) => d.done[id]).length, 3, ACH_DAILY_ALL, d.all));
+    return;
+  }
+  const total = ACH_LIFE.reduce((n, f) => n + f.tiers.length, 0), got = ACH_LIFE.reduce((n, f) => n + achTier(f), 0);
+  sub.textContent = `${got} / ${total} unlocked. Every level pays more coins.`;
+  for (const f of ACH_LIFE) {
+    const tier = achTier(f), maxed = tier >= f.tiers.length, need = f.tiers[Math.min(tier, f.tiers.length - 1)];
+    const stars = '★'.repeat(tier) + '☆'.repeat(f.tiers.length - tier);
+    list.appendChild(achRow(SPR['trophy' + Math.min(tier, 4)], `${f.name} <small>${stars}</small>`, maxed ? `${f.text(need)}: every level done!` : f.text(need), ach.life[f.id] || 0, need, ACH_TIER_COINS[Math.min(tier, 3)], maxed));
+  }
 }
 
 // HUD: the rider's skill icon (top right). Second Wind dims once it's used today.

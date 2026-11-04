@@ -281,6 +281,8 @@ h2 { font-size: 20px; font-weight: 400; text-transform: uppercase; color: var(--
 .shop-item.rare { border-color: #9b5de5; }
 .shop-item.legend { border-color: var(--gold); animation: legend-glow 1.6s steps(4) infinite; }
 .shop-item.legend i { color: var(--gold); }
+.shop-item.ultimate { animation-duration: 0.8s; box-shadow: 0 0 0 2px #1a1c2c, 0 0 10px rgba(255, 210, 63, 0.55); }
+.shop-item.ultimate i { color: #fff; }
 @keyframes legend-glow { 0%, 100% { border-color: #ffd23f; } 25% { border-color: #ff5a5f; } 50% { border-color: #2ec4b6; } 75% { border-color: #9b5de5; } }
 .shop-item i { position: absolute; top: 4px; right: 4px; font-style: normal; font-size: 6px; color: #c9a6ff; }
 .shop-item canvas { height: 48px; width: auto; }
@@ -347,3 +349,25 @@ h2 { font-size: 20px; font-weight: 400; text-transform: uppercase; color: var(--
 .fb-label { display: block; margin-top: 12px; font-size: 8px; text-align: left; }
 .fb-text { display: block; width: 100%; margin-top: 6px; padding: 8px; border: 3px solid #1a1c2c; background: #f6f3ea; color: #1b1b1b; font: 14px/1.4 system-ui, sans-serif; resize: vertical; -webkit-user-select: text; user-select: text; touch-action: auto; }
 #screen-feedback .share.small { margin-top: 8px; }
+
+/* Achievements */
+.ach-sub { margin-top: 8px; }
+.ach-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; text-align: left; }
+.ach-item { display: flex; align-items: center; gap: 8px; padding: 7px 8px; background: #1a1c2c; border: 3px solid #1a1c2c; }
+.ach-item.done { border-color: #2ec4b6; }
+.ach-item canvas { flex: none; width: 30px; height: 30px; image-rendering: pixelated; }
+.ach-info { flex: 1; min-width: 0; }
+.ach-info b { display: block; font-size: 8px; font-weight: 400; color: var(--gold); }
+.ach-info b small { color: #b8c0cc; margin-left: 4px; font-size: 7px; }
+.ach-info span { display: block; margin-top: 4px; font: 11px/1.3 system-ui, sans-serif; color: #d9dde6; }
+.ach-info .bar { height: 5px; margin-top: 5px; background: #3a4150; }
+.ach-info .bar i { display: block; height: 100%; background: #2ec4b6; }
+.ach-info em { display: block; margin-top: 3px; font-style: normal; font-size: 6px; opacity: 0.7; }
+.ach-prize { flex: none; font-size: 7px; color: var(--gold); text-align: right; white-space: nowrap; }
+.ach-prize .coin-ico { width: 7px; height: 7px; border-width: 1px; margin-right: 3px; }
+.ach-item.done .ach-prize { color: #2ec4b6; }
+.ach-dot { display: inline-block; width: 6px; height: 6px; margin-left: 2px; background: #ff5a5f; vertical-align: top; }
+.ach-dot.hidden { display: none; }
+.unlock-pop .pop-coins { color: var(--gold); }
+.unlock-pop .pop-coins .coin-ico { display: inline-block; width: 7px; height: 7px; border-width: 1px; margin-right: 3px; }
+.unlock-pop .pop-text { font: 11px/1.3 system-ui, sans-serif; white-space: normal; max-width: calc(100vw - 110px); }

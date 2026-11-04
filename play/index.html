@@ -34,6 +34,7 @@
         <button id="shop-btn" class="aud-btn" type="button">🛒 SHOP</button>
         <button id="spin-btn" class="aud-btn" type="button">🎡 DAILY SPIN</button>
         <button id="powers-btn" class="aud-btn" type="button">⚡ POWER-UPS</button>
+        <button id="ach-btn" class="aud-btn" type="button">🏆 ACHIEVEMENTS<i id="ach-dot" class="ach-dot hidden"></i></button>
       </div>
       <button id="tilt-btn" class="share hidden" type="button">Tap to enable tilt</button>
       <p id="steer-mode" class="keys"></p>
@@ -127,6 +128,17 @@
       <div id="power-list" class="power-list"></div>
       <p class="keys power-note">One timed power-up at a time: grabbing another replaces it. The Shield works alongside any of them. Pickups show up about every 20-30 seconds of riding, a little less often in later weeks.</p>
       <button id="powers-back" class="share alt small" type="button">BACK</button>
+    </section>
+
+    <section id="screen-ach" class="panel menu-panel hidden">
+      <h2>Achievements</h2>
+      <div id="ach-tabs" class="shop-tabs">
+        <button type="button" data-tab="daily">DAILY</button>
+        <button type="button" data-tab="life">LIFETIME</button>
+      </div>
+      <p id="ach-sub" class="keys ach-sub"></p>
+      <div id="ach-list" class="ach-list"></div>
+      <button id="ach-back" class="share alt small" type="button">BACK</button>
     </section>
 
     <section id="screen-medals" class="panel menu-panel hidden">
