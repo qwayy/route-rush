@@ -272,6 +272,7 @@ const CONFIG = {
   shopPrices: {              // coins; RARE items cost more
     outfit1: 300, outfit2: 500, outfitRare: 1500,
     'bike:red': 100, 'bike:kcblue': 200, 'bike:neon': 300, 'bike:mint': 400, 'bike:pink': 500, 'bike:bmx': 700, 'bike:chrome': 1200, 'bike:gold': 2000,
+    'bike:flames': 5000, 'bike:galaxy': 10000, 'bike:lightning': 20000, 'bike:diamond': 35000, 'bike:rainbow': 50000,   // LEGENDARY
     'paper:comic': 300, 'paper:pizza': 600, 'paper:glow': 1200, 'paper:gold': 2000,
     'trail:smoke': 250, 'trail:leaves': 400, 'trail:confetti': 700, 'trail:sparkles': 1500,
   },
@@ -4411,7 +4412,10 @@ function drawBike(_, t) {
   const steady = hasModel('cruiser') ? CONFIG.cruiserLean : 1;
   const wob = bike.wobble > 0 ? Math.sin(t * 38) * 0.35 * bike.wobble / CONFIG.secondWindWobble : 0;   // crash save
   const lean = Math.round(((clamp(bike.vx * CONFIG.leanPerSpeed, -CONFIG.maxLean, CONFIG.maxLean) + wob) * steady) / 0.1) * 0.1;
-  drawSprite(pedal ? SPR.riderBigB : SPR.riderBigA, bike.x, view.bikeY + PLAYER.hl - lift, bike.crashed ? bike.spin : lean);
+  if (SPR.legendGlow) { pix.globalAlpha = 0.75 + 0.25 * Math.sin(t * 4); drawSpriteC(SPR.legendGlow, bike.x, view.bikeY - 6); pix.globalAlpha = 1; }
+  const anim = SPR.riderAnim && SPR.riderAnim[Math.floor(t * 10) % SPR.riderAnim.length];
+  drawSprite(anim ? anim[pedal ? 1 : 0] : pedal ? SPR.riderBigB : SPR.riderBigA, bike.x, view.bikeY + PLAYER.hl - lift, bike.crashed ? bike.spin : lean);
+  if (anim && !bike.crashed) drawLegendFx(t, bike.x, view.bikeY - lift);
   drawPowerFx(t, bike.x, view.bikeY - lift);
 }
 
@@ -5412,7 +5416,17 @@ const BIKES = [
   { id: 'bike:bmx', name: 'MIDNIGHT', frame: '#1a1c2c', bar: '#ff8c42', tire: '#0e0f16' },
   { id: 'bike:chrome', name: 'CHROME', frame: '#e8edf2', bar: '#ffffff', tire: '#4a4f5a', rare: true },
   { id: 'bike:gold', name: 'SOLID GOLD', frame: '#ffd23f', bar: '#fff2a8', tire: '#7a5a12', rare: true },
+  // LEGENDARY: the frame color runs through `paint` (animated on the road), with a
+  // colored glow (`aura`, r,g,b) and sparkles in the `spark` colors around the bike.
+  { id: 'bike:flames', name: 'HOT FLAMES', frame: '#ff5a1f', paint: ['#ff2a1f', '#ff7a1f', '#ffd23f', '#ff7a1f'], bar: '#1a1c2c', tire: '#2b1410', aura: '255,110,40', spark: ['#ffd23f', '#ff7a1f', '#ff2a1f'], legend: true },
+  { id: 'bike:galaxy', name: 'GALAXY', frame: '#5b2a9e', paint: ['#2a1a5e', '#5b2a9e', '#2a1a5e', '#f7f4ea', '#7a3fd0', '#2a1a5e'], bar: '#c9a6ff', tire: '#120c24', aura: '150,90,255', spark: ['#ffffff', '#c9a6ff', '#8fbfff'], legend: true },
+  { id: 'bike:lightning', name: 'LIGHTNING', frame: '#3a9bff', paint: ['#1a4fd0', '#3a9bff', '#ffffff', '#3a9bff', '#1a4fd0'], bar: '#ffffff', tire: '#101830', aura: '90,170,255', spark: ['#ffffff', '#8fe0ff', '#ffe95a'], legend: true },
+  { id: 'bike:diamond', name: 'DIAMOND', frame: '#bff4ff', paint: ['#e8fbff', '#9fe7f5', '#ffffff', '#7fd0e8', '#d4f6ff'], bar: '#ffffff', tire: '#5a7a8a', aura: '170,240,255', spark: ['#ffffff', '#bff4ff', '#ffe9fb'], legend: true },
+  { id: 'bike:rainbow', name: 'RAINBOW ROYALE', frame: '#ff5a5f', paint: ['#ff5a5f', '#ff9f43', '#ffd23f', '#7dff4f', '#2ec4b6', '#3a7bd5', '#9b5de5', '#f15bb5'], bar: '#ffffff', tire: '#1a1c2c', aura: '255,255,255', spark: ['#ff5a5f', '#ffd23f', '#7dff4f', '#2ec4b6', '#9b5de5', '#f15bb5'], legend: true },
 ];
+// Frame color of a paint job at art pixel (x, y); `step` moves a LEGENDARY paint along.
+function paintIndex(b, x, y, step = 0) { const n = b.paint.length; return ((x + y + step) % n + n) % n; }
+function paintAt(b, x, y, step = 0) { return b.paint ? b.paint[paintIndex(b, x, y, step)] : b.frame; }
 const PAPERS = [
   { id: 'paper:classic', name: 'CLASSIC', free: true },
   { id: 'paper:comic', name: 'ROLLED COMIC' },
@@ -5597,7 +5611,7 @@ function renderShop() {
   if (shopTab === 'coins') { renderStore(); return; }
   for (const it of shopItems(shopTab)) {
     const card = document.createElement('div');
-    card.className = 'shop-item' + (it.rare ? ' rare' : '');
+    card.className = 'shop-item' + (it.legend ? ' legend' : it.rare ? ' rare' : '');
     const pv = previewFor(it);
     pv.className = 'px ' + it.id.split(':')[0];
     card.appendChild(pv);
@@ -5605,7 +5619,7 @@ function renderShop() {
     name.className = 'shop-name';
     name.textContent = it.name;
     card.appendChild(name);
-    if (it.rare) { const r = document.createElement('i'); r.textContent = 'RARE'; card.appendChild(r); }
+    if (it.rare || it.legend) { const r = document.createElement('i'); r.textContent = it.legend ? 'LEGENDARY' : 'RARE'; card.appendChild(r); }
     const b = document.createElement('button');
     b.type = 'button';
     const price = itemPrice(it);
@@ -5873,7 +5887,8 @@ function makeBikeIcon(b, model = 'classic') {
   const key = b.id + model;
   if (bikeIconCache.has(key)) return bikeIconCache.get(key);
   const T = b.tire, F = b.frame, B = b.bar;
-  const c = spriteFromFn(22, 14, (px) => {
+  const c = spriteFromFn(22, 14, (px0) => {
+    const px = (x, y, col) => px0(x, y, col === F ? paintAt(b, x, y) : col);
     const r = model === 'bmx' ? 3.4 : 4.2, inner = model === 'fat' ? 1.6 : model === 'road' ? 3.5 : 2.9, cy = model === 'bmx' ? 10.2 : 9.5;
     const wheel = (cx) => { for (let y = 0; y < 14; y++) for (let x = 0; x < 22; x++) { const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy); if (d <= r && d > inner) px(x, y, T); else if (d <= 0.8) px(x, y, '#9aa0a8'); } };
     wheel(model === 'bmx' ? 6 : 5); wheel(model === 'bmx' ? 16 : 17);
@@ -5982,6 +5997,18 @@ function drawPowerup(p, t) {   // floating pickup (drawn in depth order with the
   }
 }
 // Visual on the bike for whatever is active.
+// LEGENDARY paint: sparkles that twinkle as they circle the bike.
+function drawLegendFx(t, x, y) {
+  const cols = equippedBike().spark;
+  for (let i = 0; i < 6; i++) {
+    const an = t * 2.2 + i * 1.047, k = (t * 3 + i * 0.37) % 1;
+    if (k > 0.7) continue;
+    const sx = Math.round(bx(x + Math.cos(an) * 19)), sy = Math.round(by(y - 22 + Math.sin(an) * 30));
+    pix.fillStyle = cols[i % cols.length];
+    pix.fillRect(sx, sy, 1, 1);
+    if (k > 0.2 && k < 0.5) { pix.fillRect(sx - 1, sy, 3, 1); pix.fillRect(sx, sy - 1, 1, 3); }   // brief star shape
+  }
+}
 function drawPowerFx(t, x, y) {
   const P = (dx, dy, c) => { pix.fillStyle = c; pix.fillRect(Math.round(bx(x + dx)), Math.round(by(y + dy)), 1, 1); };
   if (game.shield) {   // bubble
@@ -6120,7 +6147,7 @@ function renderGarage() {
     chip.type = 'button';
     chip.className = 'paint-chip' + (b.id === bk.id ? ' sel' : '');
     chip.title = b.name;
-    chip.style.background = b.frame;
+    chip.style.background = b.paint ? `linear-gradient(135deg, ${b.paint.join(', ')})` : b.frame;
     chip.addEventListener('click', (e) => { e.stopPropagation(); sfx.click(); shop.equipped.bike = b.id; saveShop(); applyRider(); renderGarage(); });
     garUI.paints.appendChild(chip);
   }
@@ -6215,7 +6242,7 @@ const TOP_HAIR = {
   ponytail: [[7, 5, 'hh'], [8, 5, 'h'], [9, 4, 'H'], [10, 4, 'h']],
   ponytailB: [[7, 5, 'hh'], [8, 6, 'h'], [9, 7, 'H'], [10, 7, 'h']],
 };
-function riderTopSprite(r0, frame) {
+function riderTopSprite(r0, frame, step = 0) {
   const r = look(r0), bk = equippedBike();
   const rows = SPRITE_ART[frame ? 'riderB' : 'riderA'].map((row) => row.split(''));
   for (let y = RIDER_TOP.length; y <= RIDER_TOP.length + 3; y++) rows[y] = rows[y].map((ch) => (ch === 'w' ? 'f' : ch));   // frame + rear fender in the bike color
@@ -6231,11 +6258,16 @@ function riderTopSprite(r0, frame) {
   for (const [y, x, str] of TOP_HAIR[r.style === 'ponytail' && frame ? 'ponytailB' : r.style]) {
     for (let i = 0; i < str.length; i++) if (str[i] !== ' ') rows[y][x + i] = str[i];
   }
-  return spriteFromArt(rows.map((row) => row.join('')), {
+  const pal = {
     ...PAL, s: r.skin, c: r.helmet, o: r.shirt, O: shade(r.shirt, 0.78), n: r.pants,
     h: r.hair, H: hairShade(r.hair), j: r.hair, J: shade(r.hair, 0.75),
     f: bk.frame, g: bk.bar, w: bk.tire, b: '#2ec4b6', B: '#ffd23f',
-  });
+  };
+  if (bk.paint) {   // LEGENDARY: each frame pixel gets its own color (digits = paint colors)
+    bk.paint.forEach((col, i) => { pal[i] = col; });
+    rows.forEach((row, y) => row.forEach((ch, x) => { if (ch === 'f') row[x] = String(paintIndex(bk, x, y, step)); }));
+  }
+  return spriteFromArt(rows.map((row) => row.join('')), pal);
 }
 
 // Front-view figure, 16x26 art pixels (+1 outline). Options: skin, hair,
@@ -6404,6 +6436,14 @@ function applyRider() {
   SPR.riderB = riderTopSprite(r, 1);
   SPR.riderBigA = outlined(scaleNN(SPR.riderA, CONFIG.PLAYER_SCALE));   // gameplay: bigger + 1px dark outline
   SPR.riderBigB = outlined(scaleNN(SPR.riderB, CONFIG.PLAYER_SCALE));
+  const bk = equippedBike();   // LEGENDARY paint: a pair of sprites per animation step, plus its glow
+  SPR.riderAnim = bk.paint ? bk.paint.map((_, i) => [0, 1].map((f) => outlined(scaleNN(riderTopSprite(r, f, i), CONFIG.PLAYER_SCALE)))) : null;
+  SPR.legendGlow = bk.aura ? spriteFromFn(30, 42, (px) => {
+    for (let y = 0; y < 42; y++) for (let x = 0; x < 30; x++) {
+      const d = ((x + 0.5 - 15) / 15) ** 2 + ((y + 0.5 - 21) / 21) ** 2;
+      if (d <= 1) px(x, y, `rgba(${bk.aura},${(0.5 * (1 - d)).toFixed(3)})`);
+    }
+  }) : null;
 }
 applyRider();
 function noteFurthest() {   // called each new day
