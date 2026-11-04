@@ -39,7 +39,7 @@ Paste the URL.
 - **Violence:** no blood, no characters hurt. The rider wipes out (cartoon crash) and can break windows on houses (property damage, cartoon style). If a question asks about destruction of property or mild cartoon or fantasy violence, answer yes, mild and cartoon.
 - **Sexual content, drugs, alcohol and tobacco:** No. (Game Day has tailgates and grills: no alcohol shown or mentioned.)
 - **Gambling:** No. The Daily Spin is a free prize wheel: no money or coins are wagered, and nothing can be bought.
-- **Language:** ⚠️ **Check the music.** The bundled song file is `music/shit-talking.mp3`.
+- **Language:** ⚠️ **Check the music.** The bundled song file is `play/music/shit-talking.mp3`.
   - **If it has profanity or crude lyrics:** you must answer yes. That raises the rating (likely Teen / PEGI 12–16) and rules out a kids audience.
   - **Alternatives:** use a clean version or a different track, or make the generated chiptune the default.
   - **Rights:** make sure you have the rights to distribute the song in an app.
@@ -50,7 +50,7 @@ Paste the URL.
 - **Recommended: 13+** (13–15, 16–17, 18+). This keeps the app out of the Families policy, and fits if the song has strong language.
 - **If you include ages under 13:**
   - **Policy:** the Families policy applies.
-  - **Ads:** they must be family-safe: set `childDirected: true` and `maxAdContentRating: 'G'` in `ads.config.js`. AdMob is a Families-certified SDK.
+  - **Ads:** they must be family-safe: set `childDirected: true` and `maxAdContentRating: 'G'` in `play/ads.config.js`. AdMob is a Families-certified SDK.
   - **Advertising ID:** for an all-kids audience, don't collect it. Remove the AD_ID permission from the manifest.
   - **Music:** must be clean.
 - **"Could your app unintentionally appeal to children?":** the pixel-art style might. Answer honestly. If you say yes, Google may review it.
@@ -90,7 +90,7 @@ No to all of them.
 - **Release name:** 1.0.0 (code 1).
 - **Every later upload:** increase `versionCode` in `android/app/build.gradle`.
 
-## Before switching ads to LIVE: values to replace in `ads.config.js`
+## Before switching ads to LIVE: values to replace in `play/ads.config.js`
 | Key | What it is | From AdMob console |
 |---|---|---|
 | `LIVE.appId` | AdMob **App ID** (has a `~`) | Apps → your app → App settings |

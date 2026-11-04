@@ -4880,7 +4880,7 @@ document.querySelectorAll('.set-tilt').forEach((r) => {
 updateTiltUI();
 
 ui.overlay.addEventListener('click', (e) => {
-  if (e.target.closest('#share-btn') || e.target.closest('#tilt-btn') || e.target.closest('.audio-row') || e.target.closest('.tilt-row') || e.target.closest('#resume-btn') || e.target.closest('.over-btns') || e.target.closest('.title-btns') || e.target.closest('.menu-panel') || e.target.closest('.ad-btn') || e.target.closest('.restore-btn')) return;
+  if (e.target.closest('#share-btn') || e.target.closest('#tilt-btn') || e.target.closest('.audio-row') || e.target.closest('.tilt-row') || e.target.closest('#resume-btn') || e.target.closest('.over-btns') || e.target.closest('.title-btns') || e.target.closest('.menu-panel') || e.target.closest('.ad-btn') || e.target.closest('.restore-btn') || e.target.closest('.policy-link')) return;
   if (game.state === 'paused') return;   // only the Resume button unpauses
   tryStartFromOverlay();
 });

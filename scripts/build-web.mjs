@@ -1,6 +1,6 @@
 // Copies the game's web files into www/ (what Capacitor packages into the app)
 // and writes the AdMob app ID from ads.config.js into the Android project.
-// The game itself stays in the repo root, which is what GitHub Pages serves.
+// The game lives in play/ (served by GitHub Pages at /play/); the repo root is the website.
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,12 +8,13 @@ import vm from 'node:vm';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const out = join(root, 'www');
+const src = join(root, 'play');
 const files = ['index.html', 'style.css', 'saves.js', 'ads.config.js', 'monetization.js', 'game.js', 'app.js'];
 const dirs = ['fonts', 'music'];
 
 // --- Ads config: check it, then hand the app ID to Android ---
 const sandbox = { window: {} };
-vm.runInNewContext(readFileSync(join(root, 'ads.config.js'), 'utf8'), sandbox);
+vm.runInNewContext(readFileSync(join(src, 'ads.config.js'), 'utf8'), sandbox);
 const ads = sandbox.window.ADS_CONFIG;
 const ids = ads && ads[ads.MODE];
 if (!ids || !['TEST', 'LIVE'].includes(ads.MODE)) throw new Error(`ads.config.js: MODE must be 'TEST' or 'LIVE'`);
@@ -33,6 +34,6 @@ writeFileSync(join(res, 'admob.xml'), `<?xml version="1.0" encoding="utf-8"?>
 // --- Web files ---
 rmSync(out, { recursive: true, force: true });
 mkdirSync(out);
-for (const f of files) cpSync(join(root, f), join(out, f));
-for (const d of dirs) cpSync(join(root, d), join(out, d), { recursive: true });
+for (const f of files) cpSync(join(src, f), join(out, f));
+for (const d of dirs) cpSync(join(src, d), join(out, d), { recursive: true });
 console.log(`www/ built: ${files.length} files + ${dirs.join(', ')} (ads: ${ads.MODE})`);
