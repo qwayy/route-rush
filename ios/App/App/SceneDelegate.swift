@@ -41,9 +41,6 @@ class GameViewController: CAPBridgeViewController {
         return config
     }
 
-    override var prefersStatusBarHidden: Bool { true }
-    override var prefersHomeIndicatorAutoHidden: Bool { true }
-
     private static func bridgeScript() -> String {
         var saves: [String: String] = [:]
         for (key, value) in UserDefaults.standard.dictionaryRepresentation() where key.hasPrefix(prefsPrefix) {
