@@ -22,7 +22,11 @@
 //   else happens.
 //   Web (GitHub Pages): clearly labeled placeholder overlays, as before.
 // PURCHASES
-//   Still placeholders (fake store dialog, nothing charged). LIVE: RevenueCat.
+//   Release app: Google Play Billing through @capgo/native-purchases. Product
+//   IDs in Play Console must match PRODUCTS below. Coins are granted and saved
+//   BEFORE the purchase is consumed, and unfinished purchases are picked up
+//   again at launch, so a crash mid-purchase never loses what was paid for.
+//   Debug builds and the web: the fake store dialog (nothing charged).
 // =====================================================================
 (function () {
   const PURCHASES_KEY = 'routeRush.purchases';
@@ -50,9 +54,10 @@
     busy: false,
     onAdOpen: null,            // the game mutes / pauses music while an ad is up
     onAdClose: null,
+    onGrant: null,             // (product) => the game adds coins / refreshes the shop
   };
 
-  function configure(opts) { Object.assign(state, opts || {}); }
+  function configure(opts) { Object.assign(state, opts || {}); if (Store && !state.testMode) startStore(); }
   function open() { state.busy = true; if (state.onAdOpen) state.onAdOpen(); }
   function close() { state.busy = false; if (state.onAdClose) state.onAdClose(); }
 
@@ -72,8 +77,13 @@
   // ===================================================================
   const cap = window.Capacitor;
   const AdMob = cap && cap.isNativePlatform && cap.isNativePlatform() && cap.Plugins && cap.Plugins.AdMob;
+  const isIOS = !!(cap && cap.getPlatform && cap.getPlatform() === 'ios');
   const CFG = window.ADS_CONFIG || {};
-  const IDS = CFG[CFG.MODE] || {};
+  const PCFG = (isIOS ? CFG.IOS : CFG) || {};   // this platform's MODE / TEST / LIVE
+  // Debug builds (installed over USB) always get Google's test units, so tapping
+  // ads while developing can never count as invalid clicks on the live account.
+  const isRelease = !!(window.RRNative && window.RRNative.isRelease && window.RRNative.isRelease());
+  const IDS = (isRelease ? PCFG[PCFG.MODE] : PCFG.TEST) || {};
   const admob = {
     ready: false,           // consent gathered + SDK started: ads may be requested
     loaded: {},             // ad unit id -> a rewarded ad is ready
@@ -153,6 +163,14 @@
       // ads may still be requested; Google treats it as "consent not required".
     }
     if (!canRequest) return;
+    // iPhone: Apple's "Allow tracking?" prompt (App Tracking Transparency), once,
+    // after Google's consent form. Ads still work if the player says no.
+    if (isIOS) {
+      try {
+        const t = await AdMob.trackingAuthorizationStatus();
+        if (t.status === 'notDetermined') await AdMob.requestTrackingAuthorization();
+      } catch (e) { /* older iOS: nothing to ask */ }
+    }
     // 2) Start the SDK with the audience settings.
     try {
       await AdMob.initialize({
@@ -272,6 +290,88 @@
     showInterstitialAd(onDone);
   }
 
+  // ===================================================================
+  // Google Play Billing (release app only)
+  // ===================================================================
+  const Store = cap && cap.isNativePlatform && cap.isNativePlatform() && cap.Plugins && cap.Plugins.NativePurchases;
+  const GRANTED_KEY = 'routeRush.iapGranted';   // purchase tokens already paid out (consumables)
+  const store = { started: false, granted: load(GRANTED_KEY, { tokens: [] }) };
+
+  // Pay out one Play purchase exactly once, then finish it with Google.
+  // Order matters: save what the player got first, then consume/acknowledge.
+  async function settle(tx, announce) {
+    const p = PRODUCTS[tx.productIdentifier];
+    if (!p || tx.purchaseState !== '1' || !tx.purchaseToken) return null;   // unknown, or payment still pending
+    if (p.type === 'nonconsumable') {
+      const isNew = !state.owned[p.id];
+      state.owned[p.id] = true;
+      save(PURCHASES_KEY, state.owned);
+      if (isNew && state.onGrant) state.onGrant(p, announce);
+      if (!tx.isAcknowledged) await Store.acknowledgePurchase({ purchaseToken: tx.purchaseToken }).catch(() => {});
+      return p;
+    }
+    const tokens = store.granted.tokens;
+    let paid = false;
+    if (!tokens.includes(tx.purchaseToken)) {
+      tokens.push(tx.purchaseToken);
+      if (tokens.length > 100) tokens.splice(0, tokens.length - 100);
+      save(GRANTED_KEY, store.granted);
+      if (state.onGrant) state.onGrant(p, announce);
+      paid = true;
+    }
+    await Store.consumePurchase({ purchaseToken: tx.purchaseToken }).catch(() => {});   // retried next launch if this fails
+    return paid ? p : null;
+  }
+
+  // Everything Play says this player owns: Remove Ads, plus any coin pack that
+  // was paid for but never finished (app closed mid-purchase, slow payment).
+  async function syncPurchases(announce) {
+    const { purchases } = await Store.getPurchases({ productType: 'inapp' });
+    const got = [];
+    for (const tx of purchases || []) { const p = await settle(tx, announce); if (p) got.push(p); }
+    // A refunded Remove Ads disappears from Play's list. (A failed query
+    // throws instead, so a network error never takes it away.)
+    if (state.owned.remove_ads && !(purchases || []).some((tx) => tx.productIdentifier === 'remove_ads' && tx.purchaseState === '1')) {
+      state.owned.remove_ads = false;
+      save(PURCHASES_KEY, state.owned);
+    }
+    return got;
+  }
+
+  function startStore() {
+    if (store.started) return;
+    store.started = true;
+    // Local prices ("$2.99", "2,99 €") straight from Play.
+    Store.getProducts({ productIdentifiers: Object.keys(PRODUCTS), productType: 'inapp' }).then(({ products }) => {
+      for (const sp of products || []) if (PRODUCTS[sp.identifier] && sp.priceString) PRODUCTS[sp.identifier].price = sp.priceString;
+    }).catch(() => {});
+    syncPurchases(true).catch(() => {});
+    // Coming back to the app may finish a pending payment.
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && !state.busy) syncPurchases(true).catch(() => {}); });
+  }
+
+  async function playPurchase(p, onSuccess, onFail) {
+    open();
+    try {
+      const tx = await Store.purchaseProduct({
+        productIdentifier: p.id, productType: 'inapp',
+        isConsumable: p.type === 'consumable', autoAcknowledgePurchases: false,   // settle() finishes it after saving
+      });
+      const got = await settle(tx, false);
+      close();
+      if (got || p.type === 'nonconsumable') { if (onSuccess) onSuccess(p); }
+      else if (onFail) onFail(tx.purchaseState === '0' ? 'pending' : 'failed');
+    } catch (e) {
+      close();
+      const code = (e && e.code) || '', msg = (e && e.message) || '';
+      if (code === 'USER_CANCELED') { if (onFail) onFail('cancelled'); }
+      else if (code === 'ITEM_ALREADY_OWNED') {   // paid before: pick it up instead of failing
+        syncPurchases(false).then(() => { if (owns(p.id)) { if (onSuccess) onSuccess(p); } else if (onFail) onFail('failed'); }).catch(() => { if (onFail) onFail('failed'); });
+      } else if (/pending/i.test(msg)) { if (onFail) onFail('pending'); }
+      else if (onFail) onFail('store unavailable');
+    }
+  }
+
   // Purchases
   function purchase(productId, onSuccess, onFail) {
     const p = PRODUCTS[productId];
@@ -279,7 +379,7 @@
     if (p.type === 'nonconsumable' && owns(productId)) { if (onFail) onFail('already owned'); return; }
     if (state.busy) return;
     if (!state.testMode) {
-      // LIVE: RevenueCat purchasePackage(...) for productId; on success record entitlements, then onSuccess(p).
+      if (Store) { playPurchase(p, onSuccess, onFail); return; }
       if (onFail) onFail('store unavailable');
       return;
     }
@@ -307,7 +407,11 @@
   }
 
   function restorePurchases(onDone) {
-    // LIVE: RevenueCat restorePurchases(); copy active entitlements into state.owned.
+    if (Store && !state.testMode) {
+      const list = () => Object.keys(state.owned).filter((k) => state.owned[k]).map((k) => (PRODUCTS[k] || {}).title || k);
+      syncPurchases(true).then(() => { if (onDone) onDone(list()); }).catch(() => { if (onDone) onDone(null); });
+      return;
+    }
     state.owned = load(PURCHASES_KEY, {});
     if (onDone) onDone(Object.keys(state.owned).filter((k) => state.owned[k]));
   }
@@ -324,6 +428,6 @@
     PRODUCTS, configure, showRewardedAd, showInterstitialAd, maybeShowInterstitial,
     noteRunStart, noteGameOver, purchase, restorePurchases, owns,
     isBusy: () => state.busy, testMode: () => state.testMode,
-    adStatus: () => ({ native: !!AdMob, mode: CFG.MODE, ready: admob.ready, rewarded: { ...admob.loaded }, interstitial: admob.inter.loaded, privacyRequired: admob.privacyRequired }),
+    adStatus: () => ({ native: !!AdMob, mode: PCFG.MODE, ready: admob.ready, rewarded: { ...admob.loaded }, interstitial: admob.inter.loaded, privacyRequired: admob.privacyRequired }),
   };
 })();

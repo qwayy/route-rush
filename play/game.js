@@ -5632,7 +5632,7 @@ function renderShop() {
   shopUI.tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('sel', b.dataset.tab === shopTab));
   shopUI.debugBtn.classList.toggle('hidden', !debug.hitAreas);
   shopUI.grid.innerHTML = '';
-  shopUI.note.textContent = shopTab === 'outfits' ? `Outfits for ${curRider().name}. Cosmetic only.` : shopTab === 'coins' ? (RELEASE_BUILD ? 'Coin packs and Remove Ads: coming soon.' : 'Real-money purchases (placeholder store).') : shopTab === 'bikes' ? 'Paint jobs fit any bike. Bike models (perks) are earned in the Garage.' : 'Cosmetic only. Same speed and controls.';
+  shopUI.note.textContent = shopTab === 'outfits' ? `Outfits for ${curRider().name}. Cosmetic only.` : shopTab === 'coins' ? (RELEASE_BUILD ? 'Paid securely through Google Play.' : 'Real-money purchases (placeholder store).') : shopTab === 'bikes' ? 'Paint jobs fit any bike. Bike models (perks) are earned in the Garage.' : 'Cosmetic only. Same speed and controls.';
   if (shopTab === 'coins') { renderStore(); return; }
   for (const it of shopItems(shopTab)) {
     const card = document.createElement('div');
@@ -5687,10 +5687,16 @@ function renderStore() {
       e.stopPropagation();
       sfx.click();
       Monetization.purchase(p.id, (prod) => {
-        if (prod.coins) { giveCoins(prod.coins); shopUI.msg.textContent = `+${prod.coins.toLocaleString('en-US')} coins!`; }
-        else shopUI.msg.textContent = `${prod.title}: done. Thanks!`;
+        if (prod.coins) {
+          if (!RELEASE_BUILD) giveCoins(prod.coins);   // the Play store pays coins through onGrant
+          shopUI.msg.textContent = `+${prod.coins.toLocaleString('en-US')} coins!`;
+        } else shopUI.msg.textContent = `${prod.title}: done. Thanks!`;
         renderShop();
-      }, (why) => { if (why !== 'cancelled') shopUI.msg.textContent = why === 'store unavailable' ? 'Store coming soon!' : `Purchase failed: ${why}`; });
+      }, (why) => {
+        if (why === 'cancelled') return;
+        shopUI.msg.textContent = why === 'pending' ? 'Payment pending. It arrives as soon as Google Play confirms it.'
+          : why === 'store unavailable' ? 'Google Play store not available right now. Try again soon.' : `Purchase failed: ${why}`;
+      });
     });
     card.appendChild(b);
     shopUI.grid.appendChild(card);
@@ -5712,7 +5718,7 @@ document.querySelectorAll('.restore-btn').forEach((b) => b.addEventListener('cli
   sfx.click();
   Monetization.restorePurchases((list) => {
     const tag = RELEASE_BUILD ? '' : ' (placeholder)';
-    const msg = list.length ? `Restored: ${list.join(', ')}${tag}` : `Nothing to restore${tag}`;
+    const msg = !list ? 'Could not reach Google Play. Check your connection and try again.' : list.length ?`Restored: ${list.join(', ')}${tag}` : `Nothing to restore${tag}`;
     document.querySelectorAll('.restore-msg').forEach((m) => { m.textContent = msg; });
   });
 }));
@@ -5866,6 +5872,12 @@ Monetization.configure({
   rewardedSeconds: CONFIG.rewardedAdSeconds,
   onAdOpen: () => { pauseMusic(); updatePedalSound(false); },
   onAdClose: () => { if (music.on && game.state !== 'paused') startMusic(); },
+  // Google Play purchase confirmed (in the shop, or picked up later at launch).
+  onGrant: (prod, announce) => {
+    if (prod.coins) giveCoins(prod.coins);
+    if (announce) showToast(prod.coins ? `+${prod.coins.toLocaleString('en-US')} coins from your purchase!` : `${prod.title} unlocked. Thanks!`);
+    if (shopUI.panel && !shopUI.panel.classList.contains('hidden')) renderShop();
+  },
 });
 
 

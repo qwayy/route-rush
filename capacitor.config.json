@@ -4,5 +4,10 @@
   "webDir": "www",
   "android": {
     "backgroundColor": "#1a1c2c"
+  },
+  "ios": {
+    "backgroundColor": "#1a1c2c",
+    "contentInset": "never",
+    "scrollEnabled": false
   }
 }

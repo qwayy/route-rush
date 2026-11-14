@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node scripts/build-web.mjs",
     "sync": "node scripts/build-web.mjs && npx cap sync android",
+    "sync:ios": "node scripts/build-web.mjs && npx cap sync ios",
     "phone": "node scripts/phone.mjs",
     "open": "npx cap open android"
   },
@@ -14,7 +15,9 @@
     "@capacitor/android": "8.5.3",
     "@capacitor/app": "8.1.2",
     "@capacitor/core": "8.5.3",
-    "@capacitor/preferences": "8.0.1"
+    "@capacitor/ios": "8.5.3",
+    "@capacitor/preferences": "8.0.1",
+    "@capgo/native-purchases": "8.9.11"
   },
   "devDependencies": {
     "@capacitor/cli": "8.5.3"

@@ -8,3 +8,7 @@ www/
 keystore.properties
 *-keystore.properties
 signing.properties
+
+# Apple App Store Connect API keys: GitHub secrets only, never in git
+*.p8
+AuthKey_*

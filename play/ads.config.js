@@ -12,10 +12,11 @@
 // a LIVE build refuses to run while any value still says REPLACE_ME.
 //
 // The web version (GitHub Pages) never shows real ads: it keeps the
-// placeholder overlays.
+// placeholder overlays. Debug builds (npm run phone) always use the TEST
+// units, even in LIVE mode; only the signed Play build shows real ads.
 // =====================================================================
 const ADS_CONFIG = {
-  MODE: 'TEST',   // 'TEST' or 'LIVE'
+  MODE: 'LIVE',   // 'TEST' or 'LIVE'
 
   TEST: {
     appId: 'ca-app-pub-3940256099942544~3347511713',          // Google sample AdMob app ID (Android)
@@ -28,13 +29,37 @@ const ADS_CONFIG = {
   },
 
   LIVE: {
-    appId: 'REPLACE_ME',          // ca-app-pub-XXXXXXXXXXXXXXXX~XXXXXXXXXX  (note the ~)
+    appId: 'ca-app-pub-1305027238754867~2201982229',   // Route Rush KC (AdMob)
     rewarded: {
-      keep_riding: 'REPLACE_ME',  // ca-app-pub-XXXXXXXXXXXXXXXX/XXXXXXXXXX  (note the /)
-      double_coins: 'REPLACE_ME',
-      daily_spin: 'REPLACE_ME',
+      keep_riding: 'ca-app-pub-1305027238754867/5908633807',  // "Rewarded" unit (one unit for all three)
+      double_coins: 'ca-app-pub-1305027238754867/5908633807',
+      daily_spin: 'ca-app-pub-1305027238754867/5908633807',
     },
-    interstitial: 'REPLACE_ME',
+    interstitial: 'ca-app-pub-1305027238754867/2631733775',   // "Interstitial" unit
+  },
+
+  // iPhone app: its own AdMob app + ad units (AdMob → Apps → Add app → iOS).
+  // Same rules as above; the App ID goes into ios/App/App/Info.plist on build.
+  IOS: {
+    MODE: 'TEST',   // 'TEST' or 'LIVE'
+    TEST: {
+      appId: 'ca-app-pub-3940256099942544~1458002511',          // Google sample AdMob app ID (iOS)
+      rewarded: {
+        keep_riding: 'ca-app-pub-3940256099942544/1712485313',  // Google demo: Rewarded (iOS)
+        double_coins: 'ca-app-pub-3940256099942544/1712485313',
+        daily_spin: 'ca-app-pub-3940256099942544/1712485313',
+      },
+      interstitial: 'ca-app-pub-3940256099942544/4411468910',   // Google demo: Interstitial (iOS)
+    },
+    LIVE: {
+      appId: 'REPLACE_ME',
+      rewarded: {
+        keep_riding: 'REPLACE_ME',
+        double_coins: 'REPLACE_ME',
+        daily_spin: 'REPLACE_ME',
+      },
+      interstitial: 'REPLACE_ME',
+    },
   },
 
   // Audience / safety (apply in both modes)

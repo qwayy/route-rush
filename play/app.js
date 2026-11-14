@@ -1,6 +1,7 @@
-// Android app shell (Capacitor). Does nothing in a normal browser.
+// App shell (Capacitor, Android + iPhone). Does nothing in a normal browser.
 // - Tilt: Android lets apps read the motion sensor without asking, so tilt
-//   starts listening right away (no "tap to enable").
+//   starts listening right away (no "tap to enable"). iPhone still needs the
+//   first tap (the app grants it without a pop-up).
 // - Screen stays awake while riding; menus let it sleep.
 // - Minimized / phone locked: pause the ride, silence all audio; sound comes
 //   back when the app returns (the ride waits on the pause menu).
@@ -14,9 +15,11 @@
   document.documentElement.classList.add('native-app');
 
   // Tilt
-  tilt.needsPermission = false;
-  listenForTilt();
-  updateSteerUI();
+  if (cap.getPlatform() === 'android') {
+    tilt.needsPermission = false;
+    listenForTilt();
+    updateSteerUI();
+  }
 
   // Screen awake only while riding
   let awake = null;

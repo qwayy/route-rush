@@ -1,10 +1,10 @@
 # Route Rush KC: Google Play Console checklist
 
-Answers below match how version 1.0.0 actually works:
+Answers below match how version 1.0.1 actually works:
 - **Ads:** Google AdMob, rewarded and interstitial.
 - **No accounts:** there's no login and no server of our own.
 - **Saves:** stay on the phone.
-- **Purchases:** not live yet.
+- **Purchases:** Google Play Billing (Remove Ads + 3 coin packs). No server of our own: purchases are checked with Google Play on the phone.
 - **Feedback:** the button opens the player's own email app.
 
 Re-check these answers whenever that changes.
@@ -44,7 +44,7 @@ Paste the URL.
   - **Alternatives:** use a clean version or a different track, or make the generated chiptune the default.
   - **Rights:** make sure you have the rights to distribute the song in an app.
 - **User interaction:** players can't chat, share content or see other users. No location sharing.
-- **Digital purchases:** **No** for 1.0.0 (the store says "coming soon"). Change this when real purchases are added.
+- **Digital purchases:** **Yes** (in-app purchases through Google Play).
 
 ### Target audience and content
 - **Recommended: 13+** (13–15, 16–17, 18+). This keeps the app out of the Families policy, and fits if the song has strong language.
@@ -87,7 +87,7 @@ No to all of them.
 ## Release (Test and release → closed or internal testing first)
 - **Upload:** `android/app/build/outputs/bundle/release/app-release.aab`.
 - **Play App Signing:** accept it (Google keeps the app signing key, and you keep the *upload* key in `D:\Android\keys`).
-- **Release name:** 1.0.0 (code 1).
+- **Release name:** 1.0.1 (code 2).
 - **Every later upload:** increase `versionCode` in `android/app/build.gradle`.
 
 ## Before switching ads to LIVE: values to replace in `play/ads.config.js`
@@ -101,3 +101,17 @@ No to all of them.
 | `MODE` | change `'TEST'` to `'LIVE'` | |
 
 Then rebuild (`npm run sync` then `gradlew bundleRelease`). The build stops if any LIVE value is still `REPLACE_ME` or still a Google test ID. Never click your own live ads. Add your phone to `testDeviceIds` to see test ads on it with live IDs.
+
+## In-app products (Monetize with Play → Products → One-time products)
+Create each one with **exactly** this Product ID (the app looks them up by ID), then **Activate** it:
+
+| Product ID | Name | Price (USD) |
+|---|---|---|
+| `remove_ads` | Remove Ads | 2.99 |
+| `coins_1000` | 1,000 Coins | 0.99 |
+| `coins_6000` | 6,000 Coins | 4.99 |
+| `coins_15000` | 15,000 Coins | 9.99 |
+
+- Products can only be created after an AAB containing the billing library has been uploaded (any track).
+- **Setup → License testing:** add your Gmail so your test purchases are free.
+- The app must be installed **from Play** (internal or closed test link) for purchases to work. A build installed over USB shows "store not available".
